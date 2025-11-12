@@ -1,0 +1,21 @@
+# 3D几何分支配置文件
+# 用于MinkUNet自编码器训练
+
+model:
+  in_channels: 3
+  feature_dim: 128
+  voxel_size: 0.05
+
+training:
+  batch_size: 4
+  num_epochs: 100
+  learning_rate: 0.001
+  weight_decay: 0.0001
+
+data:
+  nuscenes_root: "data/nuscenes"
+  split: "train"
+
+output:
+  checkpoint_dir: "outputs/geometric_3d"
+
