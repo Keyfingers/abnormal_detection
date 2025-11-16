@@ -40,9 +40,9 @@ cd ../../../../..
 #### nuScenes数据集
 ```bash
 # 下载nuScenes数据集（v1.0）
-# 解压到 data/nuscenes/ 目录
+# 解压到 autodl-tmp/dataset/nuscenes/ 目录
 # 目录结构应该是：
-# data/nuscenes/
+# autodl-tmp/dataset/nuscenes/
 #   ├── samples/
 #   ├── sweeps/
 #   ├── maps/
@@ -52,9 +52,9 @@ cd ../../../../..
 #### AnoVox数据集
 ```bash
 # 下载AnoVox数据集
-# 解压到 data/anovox/ 目录
+# 解压到 autodl-tmp/dataset/anovox/ 目录
 # 目录结构应该是：
-# data/anovox/
+# autodl-tmp/dataset/anovox/
 #   ├── train/
 #   │   ├── images/
 #   │   ├── pointclouds/
