@@ -1,0 +1,94 @@
+---
+alwaysApply: false
+---
+
+阶段一：准备工作
+数据： nuScenes (用于预训练), AnoVox  (用于微调融合头和最终评估)。   
+
+代码“巨人”： Mask2Former (2D分支), Minkowski Engine  (3D分支)。   
+
+注意点： 确保您拥有两个数据集的相机标定参数（内参和外参）。这是第4阶段3D-2D投影的命脉。   
+
+阶段二：2D语义分支（Mask2Former + RbA）
+模型： Mask2Former。
+
+训练任务： 在 nuScenes 上进行标准的语义分割（Semantic Segmentation）预训练。
+
+输出A（用于融合）：
+
+注意点： 您要提取的不是最终的“类别标签”，而是Mask2Former像素解码器（Pixel Decoder）输出的、进入分类头之前的高维特征图。这是一个密集的2D特征图，例如 F_2D，形状为 ``。
+
+输出B（用于基线）：
+
+注意点： 按照RbA 论文的定义，利用模型对“已知类”的logit计算“语义异常分数”。这将作为您论文中的“2D-Only”基线。
+
+阶段三：3D几何分支（MinkUNet + 重建）
+模型： MinkUNet（基于Minkowski Engine ）。   
+
+训练任务： 在 nuScenes 上进行自监督重建（Self-supervised Reconstruction）。
+
+注意点： 这是一个巧妙的无监督任务。具体做法：输入点云，随机Mask掉（删除）30%的体素，然后训练MinkUNet（它是一个自动编码器）来预测并重建被Mask掉的部分。   
+
+输出A（用于融合）：
+
+注意点： 提取来自MinkUNet解码器（U-Net的上采样部分）的稀疏3D特征。这是一个N x C_3D的张量（N是点云中的体素数量，C_3D是特征维度，例如128），以及它们对应的N x 3的(x,y,z)坐标。
+
+输出B（用于基线）：
+
+注意点： 您的“3D-Only”基线就是重建误差。当一个“异常”物体（如AnoVox中的奶牛）输入时，模型因为它从未在nuScenes中学过如何“重建”奶牛，所以其重建误差会非常高。   
+
+阶段四：融合模块（最简单高效的融合方案）
+这是您问题的核心。您不需要复杂的BEV投影。您方案中“3D投影到2D”的思路更简单高效。   
+
+具体融合步骤：
+
+冻结： 加载您在nuScenes上预训练好的Mask2Former和MinkUNet，冻结它们的所有参数。   
+
+获取输入（来自AnoVox ）：   
+
+F_2D（密集）：来自Mask2Former的 `` 特征图。
+
+F_3D_sparse（稀疏）：来自MinkUNet的 `` 特征 和 [N, 3] 坐标。
+
+投影与“Splatting” (3D -> 2D)：
+
+投影： 使用AnoVox提供的相机标定矩阵，将 [N, 3] 的(x,y,z)坐标投影为 [N, 2] 的(u,v)像素坐标。   
+
+Splatting（绘制）： 创建一个全零的、与2D特征图同样大小的张量 F_3D_on_2D，形状为 。然后，将 的3D特征**“绘制”**（或“粘贴”）到这个2D图上的 (u,v) 位置。
+
+注意点： 这张 F_3D_on_2D 图会非常稀疏（大部分是0），这是完全正常的。它代表了“在这些像素上，我们有3D几何信息”。
+
+连接（Concatenate）：
+
+沿着通道维度将两个特征图堆叠起来：
+
+F_combined = torch.cat(, dim=1)
+
+这个组合特征图的形状是 ``。
+
+轻量级融合头（您唯一需要训练的部分）：
+
+这是一个极其简单的2D CNN。例如：
+
+Python
+
+self.fusion_head = nn.Sequential(
+    nn.Conv2d(C_2D + C_3D, 128, kernel_size=3, padding=1),
+    nn.ReLU(),
+    nn.Conv2d(128, 64, kernel_size=3, padding=1),
+    nn.ReLU(),
+    nn.Conv2d(64, 1, kernel_size=1), # 输出单一的异常分数通道
+    nn.Sigmoid() # 将分数归一化到0-1
+)
+微调（Fine-tuning）：
+
+数据集： AnoVox 训练集 。   
+
+损失函数： 使用Focal Loss （如您原方案所述）或 Dice Loss，对比融合头的输出（异常图）和AnoVox的真值（Ground Truth）掩码。   
+
+注意点： 由于只有融合头在训练，这个过程会非常快，且不会过拟合。
+
+阶段五：评估（同上，保持不变）
+目标： 证明您的Fusion模型（来自第4阶段）在AnoVox测试集上的F1分数/AUROC/AP同时优于2D-Only基线（来自第2阶段）和3D-Only基线（来自第3阶段）。   
+
+定性分析： 必须包含您提到的关键案例（2D失败/3D失败/融合成功）

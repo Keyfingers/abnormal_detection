@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 import numpy as np
 import MinkowskiEngine as ME
+from scipy.spatial.distance import cdist
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../..'))
 from src.models.geometric_3d import Geometric3DBranch
@@ -34,8 +35,16 @@ def train_one_epoch(
     criterion: nn.Module,
     device: torch.device,
     epoch: int,
+    mask_ratio: float = 0.3,
 ):
-    """训练一个epoch"""
+    """
+    训练一个epoch
+    
+    修复说明：
+    - 添加mask_ratio参数，实现规则要求的随机mask训练（30%体素被mask）
+    - 修复损失计算：应该计算原始点云和重建点云的L2损失，而不是重建误差的均值
+    - 重建误差是异常分数，不是训练损失；训练损失应该是重建损失
+    """
     model.train()
     total_loss = 0.0
     num_batches = 0
@@ -51,17 +60,70 @@ def train_one_epoch(
         
         optimizer.zero_grad()
         
-        # 前向传播
+        # 修复：前向传播时应用随机mask（规则要求：随机mask掉30%体素）
+        # 这是自监督重建任务的核心：模型从部分可见的点云学习重建完整点云
         results = model(
             valid_pcs,
             return_features=False,
-            return_reconstruction_error=True,
+            return_reconstruction_error=False,  # 训练时不需要重建误差
+            apply_mask=True,  # 修复：训练时应用mask
+            mask_ratio=mask_ratio,  # 修复：使用30%的mask比例
         )
         
-        # 计算重建损失
-        # 这里使用简化的损失：重建误差的均值
-        reconstruction_error = results['reconstruction_error']
-        loss = reconstruction_error.mean()
+        # 修复：计算重建损失（L2损失）
+        # 规则要求：训练MinkUNet来预测并重建被mask掉的部分
+        # 损失应该是原始点云特征和重建点云特征的L2距离
+        original_tensor = results['sparse_tensor']  # 原始完整点云
+        reconstruction = results['reconstruction']  # 重建的点云（3维xyz）
+        
+        # 获取原始特征（xyz坐标）
+        original_features = original_tensor.F  # (N, 3)
+        
+        # 将重建特征插值回原始坐标位置
+        # 由于稀疏张量坐标可能不完全匹配，需要插值
+        original_coords = original_tensor.C.float()[:, 1:]  # (N, 3) 去除batch索引
+        reconstruction_coords = reconstruction.C.float()[:, 1:]  # (M, 3)
+        reconstructed_features = reconstruction.F  # (M, 3)
+        
+        # 如果坐标匹配，直接计算L2损失
+        if len(original_coords) == len(reconstruction_coords):
+            coords_match = torch.allclose(original_coords, reconstruction_coords, atol=1e-3)
+            if coords_match:
+                # 直接计算L2损失
+                loss = criterion(original_features, reconstructed_features)
+            else:
+                # 坐标不匹配，使用最近邻插值
+                
+                original_coords_np = original_coords.detach().cpu().numpy()
+                reconstruction_coords_np = reconstruction_coords.detach().cpu().numpy()
+                reconstructed_features_np = reconstructed_features.detach().cpu().numpy()
+                
+                distances = cdist(original_coords_np, reconstruction_coords_np)
+                nearest_indices = np.argmin(distances, axis=1)
+                
+                nearest_reconstructed = torch.from_numpy(
+                    reconstructed_features_np[nearest_indices]
+                ).to(original_features.device)
+                
+                loss = criterion(original_features, nearest_reconstructed)
+        else:
+            # 坐标数量不匹配，使用chamfer距离的简化版本
+            # 计算每个原始点到最近重建点的距离
+            from scipy.spatial.distance import cdist
+            import numpy as np
+            
+            original_coords_np = original_coords.detach().cpu().numpy()
+            reconstruction_coords_np = reconstruction_coords.detach().cpu().numpy()
+            reconstructed_features_np = reconstructed_features.detach().cpu().numpy()
+            
+            distances = cdist(original_coords_np, reconstruction_coords_np)
+            nearest_indices = np.argmin(distances, axis=1)
+            
+            nearest_reconstructed = torch.from_numpy(
+                reconstructed_features_np[nearest_indices]
+            ).to(original_features.device)
+            
+            loss = criterion(original_features, nearest_reconstructed)
         
         # 反向传播
         loss.backward()
@@ -158,17 +220,18 @@ def main():
     print(f"Output dir: {args.output_dir}")
     print(f"Batch size: {args.batch_size}")
     print(f"Number of epochs: {args.num_epochs}")
+    print(f"Mask ratio: 0.3 (30% voxels masked)")  # 修复：显示mask比例
     print("=" * 50)
     
     best_loss = float('inf')
     
     for epoch in range(1, args.num_epochs + 1):
-        # 训练
+        # 训练（修复：传入mask_ratio参数）
         train_loss = train_one_epoch(
-            model, train_loader, optimizer, criterion, device, epoch
+            model, train_loader, optimizer, criterion, device, epoch, mask_ratio=0.3
         )
         
-        # 验证（简化版本）
+        # 验证（修复：使用与训练相同的损失计算方式）
         model.eval()
         val_loss = 0.0
         val_batches = 0
@@ -179,12 +242,39 @@ def main():
                 if len(valid_pcs) == 0:
                     continue
                 
+                # 修复：验证时也应用mask（模拟训练条件）
                 results = model(
                     valid_pcs,
                     return_features=False,
-                    return_reconstruction_error=True,
+                    return_reconstruction_error=False,
+                    apply_mask=True,  # 验证时也使用mask
+                    mask_ratio=0.3,
                 )
-                loss = results['reconstruction_error'].mean()
+                
+                # 修复：计算重建损失（与训练时相同）
+                original_tensor = results['sparse_tensor']
+                reconstruction = results['reconstruction']
+                original_features = original_tensor.F
+                reconstructed_features = reconstruction.F
+                
+                # 简化：如果特征数量相同，直接计算L2损失
+                if len(original_features) == len(reconstructed_features):
+                    loss = criterion(original_features, reconstructed_features)
+                else:
+                    # 使用最近邻插值
+                    
+                    original_coords = original_tensor.C.float()[:, 1:].detach().cpu().numpy()
+                    reconstruction_coords = reconstruction.C.float()[:, 1:].detach().cpu().numpy()
+                    reconstructed_features_np = reconstructed_features.detach().cpu().numpy()
+                    
+                    distances = cdist(original_coords, reconstruction_coords)
+                    nearest_indices = np.argmin(distances, axis=1)
+                    nearest_reconstructed = torch.from_numpy(
+                        reconstructed_features_np[nearest_indices]
+                    ).to(original_features.device)
+                    
+                    loss = criterion(original_features, nearest_reconstructed)
+                
                 val_loss += loss.item()
                 val_batches += 1
         

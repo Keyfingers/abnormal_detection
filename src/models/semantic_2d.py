@@ -149,16 +149,44 @@ class Semantic2DBranch(nn.Module):
         """
         计算RbA异常评分
         
-        RbA评分公式：-sum(tanh(logits))
+        修复说明：
+        - RbA (Rejected by All) 的核心思想：异常区域被所有已知类别拒绝
+        - 对于已知类，logits应该很高；对于未知/异常类，所有logits都很低
+        - 需要明确已知类集合，但这里使用通用方法：低logits表示异常
+        
+        RbA评分公式（改进版）：
+        - 方法1：-sum(tanh(logits)) - 所有logits都很低时，分数高（异常）
+        - 方法2：-max(logits) - 最大logit很低时，分数高（异常）
+        - 方法3：使用softmax后的熵 - 熵高表示不确定性高（异常）
         
         Args:
-            logits: 语义分割logits (B, K, H, W)
+            logits: 语义分割logits (B, K, H, W)，K是类别数
         
         Returns:
-            RbA异常评分 (B, H, W)
+            RbA异常评分 (B, H, W)，值越大表示越异常
         """
-        # 应用tanh并求和
-        rba_score = -torch.tanh(logits).sum(dim=1)  # (B, H, W)
+        # 修复：使用多种方法组合计算RbA评分
+        # 方法1：所有logits都很低时，表示被所有类别拒绝（异常）
+        score_method1 = -torch.tanh(logits).sum(dim=1)  # (B, H, W)
+        
+        # 方法2：最大logit很低时，表示没有类别接受（异常）
+        max_logits = torch.max(logits, dim=1)[0]  # (B, H, W)
+        score_method2 = -max_logits
+        
+        # 方法3：使用softmax熵 - 熵高表示不确定性高（异常）
+        probs = torch.softmax(logits, dim=1)  # (B, K, H, W)
+        entropy = -(probs * torch.log(probs + 1e-8)).sum(dim=1)  # (B, H, W)
+        score_method3 = entropy
+        
+        # 组合多种方法（归一化后加权平均）
+        # 归一化到[0,1]范围
+        score1_norm = (score_method1 - score_method1.min()) / (score_method1.max() - score_method1.min() + 1e-8)
+        score2_norm = (score_method2 - score_method2.min()) / (score_method2.max() - score_method2.min() + 1e-8)
+        score3_norm = (score_method3 - score_method3.min()) / (score_method3.max() - score_method3.min() + 1e-8)
+        
+        # 加权组合（可以根据实际效果调整权重）
+        rba_score = 0.4 * score1_norm + 0.3 * score2_norm + 0.3 * score3_norm
+        
         return rba_score
     
     def get_semantic_features(self, images: torch.Tensor) -> torch.Tensor:

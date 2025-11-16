@@ -22,10 +22,16 @@ def collate_fn(batch):
     point_clouds = [item['point_cloud'] for item in batch]
     anomaly_masks = torch.stack([item['anomaly_mask'] for item in batch])
     
+    # 修复：添加相机参数（用于3D基线评估的投影）
+    camera_intrinsics = torch.stack([item.get('camera_intrinsic', torch.eye(3)) for item in batch])
+    camera_extrinsics = torch.stack([item.get('camera_extrinsic', torch.eye(4)) for item in batch])
+    
     return {
         'images': images,
         'point_clouds': point_clouds,
         'anomaly_masks': anomaly_masks,
+        'camera_intrinsics': camera_intrinsics,
+        'camera_extrinsics': camera_extrinsics,
     }
 
 
@@ -80,7 +86,14 @@ def evaluate_3d_baseline(
     dataloader: DataLoader,
     device: torch.device,
 ):
-    """评估3D基线（重建误差）"""
+    """
+    评估3D基线（重建误差）
+    
+    修复说明：
+    - 规则要求：重建误差需要投影回2D图像坐标，而不是使用平均误差
+    - 需要将每个点的重建误差投影到对应的2D像素位置
+    - 这需要相机标定参数（内参和外参）
+    """
     model.eval()
     
     all_scores = []
@@ -91,6 +104,11 @@ def evaluate_3d_baseline(
             point_clouds = batch['point_clouds']
             anomaly_masks = batch['anomaly_masks'].numpy()
             
+            # 修复：需要获取相机标定参数用于投影
+            # 如果数据加载器提供了相机参数，使用它们
+            camera_intrinsics = batch.get('camera_intrinsics', None)
+            camera_extrinsics = batch.get('camera_extrinsics', None)
+            
             # 过滤空点云
             valid_indices = [i for i, pc in enumerate(point_clouds) if len(pc) > 0]
             if len(valid_indices) == 0:
@@ -99,19 +117,87 @@ def evaluate_3d_baseline(
             valid_pcs = [point_clouds[i] for i in valid_indices]
             valid_masks = anomaly_masks[valid_indices]
             
-            # 获取重建误差
-            reconstruction_errors = model.get_reconstruction_error(valid_pcs)
+            # 获取重建误差和3D特征（用于投影）
+            results = model(
+                valid_pcs,
+                return_features=True,
+                return_reconstruction_error=True,
+                apply_mask=False,  # 评估时不使用mask
+            )
             
-            # 重建误差是每个点的误差，需要投影回2D图像
-            # 这里简化处理：使用平均误差作为异常分数
-            # 实际应用中需要更精确的投影
+            reconstruction_errors = results['reconstruction_error']  # 每个点的误差
+            features_3d = results['features_3d']  # 3D特征（稀疏张量）
+            coords_3d = results['coords_list']  # 3D坐标列表
+            
+            # 修复：将重建误差投影回2D图像坐标
+            # 需要将每个点的误差投影到对应的2D像素位置
             batch_scores = []
-            for i, error in enumerate(reconstruction_errors):
-                # 简化：使用平均误差
-                avg_error = error.mean().item()
-                # 创建一个与mask相同尺寸的分数图
-                score_map = np.full(valid_masks[i].shape, avg_error)
-                batch_scores.append(score_map)
+            for i, (pc, error, coords) in enumerate(zip(valid_pcs, reconstruction_errors, coords_3d)):
+                mask_shape = valid_masks[i].shape
+                H, W = mask_shape
+                
+                # 初始化2D误差图
+                error_map_2d = np.zeros((H, W), dtype=np.float32)
+                weight_map_2d = np.zeros((H, W), dtype=np.float32)
+                
+                # 获取相机参数（如果有）
+                if camera_intrinsics is not None:
+                    cam_intrinsic = camera_intrinsics[i].cpu().numpy() if isinstance(camera_intrinsics, torch.Tensor) else camera_intrinsics[i]
+                else:
+                    # 使用默认相机参数
+                    cam_intrinsic = np.array([
+                        [1000, 0, W / 2],
+                        [0, 1000, H / 2],
+                        [0, 0, 1],
+                    ])
+                
+                if camera_extrinsics is not None:
+                    cam_extrinsic = camera_extrinsics[i].cpu().numpy() if isinstance(camera_extrinsics, torch.Tensor) else camera_extrinsics[i]
+                else:
+                    cam_extrinsic = None
+                
+                # 将3D坐标投影到2D
+                coords_3d_np = coords  # (N, 3) 原始坐标
+                error_np = error.cpu().numpy() if isinstance(error, torch.Tensor) else error
+                
+                # 应用外参变换（如果提供）
+                if cam_extrinsic is not None:
+                    coords_homo = np.column_stack([coords_3d_np, np.ones(len(coords_3d_np))])
+                    coords_camera = (cam_extrinsic @ coords_homo.T).T[:, :3]
+                else:
+                    coords_camera = coords_3d_np
+                
+                # 投影到2D图像坐标
+                X, Y, Z = coords_camera[:, 0], coords_camera[:, 1], coords_camera[:, 2]
+                valid_mask = Z > 0.1
+                
+                if valid_mask.sum() > 0:
+                    X_valid = X[valid_mask]
+                    Y_valid = Y[valid_mask]
+                    Z_valid = Z[valid_mask]
+                    error_valid = error_np[valid_mask]
+                    
+                    # 投影到像素坐标
+                    u = (cam_intrinsic[0, 0] * X_valid / Z_valid + cam_intrinsic[0, 2]).astype(np.int32)
+                    v = (cam_intrinsic[1, 1] * Y_valid / Z_valid + cam_intrinsic[1, 2]).astype(np.int32)
+                    
+                    # 过滤超出范围的点
+                    in_bounds = (u >= 0) & (u < W) & (v >= 0) & (v < H)
+                    u_valid = u[in_bounds]
+                    v_valid = v[in_bounds]
+                    error_valid = error_valid[in_bounds]
+                    
+                    # 将误差填充到2D图（如果有多个点投影到同一像素，使用平均值）
+                    for ui, vi, err in zip(u_valid, v_valid, error_valid):
+                        error_map_2d[vi, ui] += err
+                        weight_map_2d[vi, ui] += 1.0
+                    
+                    # 归一化（求平均）
+                    non_zero_mask = weight_map_2d > 0
+                    if non_zero_mask.sum() > 0:
+                        error_map_2d[non_zero_mask] /= weight_map_2d[non_zero_mask]
+                
+                batch_scores.append(error_map_2d)
             
             # 收集结果
             for score_map, mask in zip(batch_scores, valid_masks):

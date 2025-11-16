@@ -115,21 +115,77 @@ class AnoVoxDataset(Dataset):
         
         results['anomaly_mask'] = mask
         
-        # 加载相机标定（如果存在）
+        # 修复：实现正确的相机标定加载（规则要求：确保数据集中包含正确的内参和外参）
+        # 这是3D-2D投影的命脉，必须准确
         calib_path = os.path.join(self.split_dir, 'calibrations', f'{sample_id}.txt')
         if os.path.exists(calib_path):
-            # 根据实际格式解析相机标定
-            # 这里使用占位符
-            camera_intrinsic = np.eye(3)
-            camera_extrinsic = np.eye(4)
+            # 修复：根据AnoVox数据集的实际格式解析相机标定
+            # 假设格式为：
+            # 内参矩阵（3x3）：
+            # fx 0 cx
+            # 0 fy cy
+            # 0 0 1
+            # 外参矩阵（4x4）：
+            # R11 R12 R13 tx
+            # R21 R22 R23 ty
+            # R31 R32 R33 tz
+            # 0   0   0   1
+            try:
+                with open(calib_path, 'r') as f:
+                    lines = f.readlines()
+                
+                # 解析内参（前3行）
+                camera_intrinsic = np.array([
+                    [float(x) for x in lines[0].split()],
+                    [float(x) for x in lines[1].split()],
+                    [float(x) for x in lines[2].split()],
+                ])
+                
+                # 解析外参（后4行）
+                camera_extrinsic = np.array([
+                    [float(x) for x in lines[3].split()],
+                    [float(x) for x in lines[4].split()],
+                    [float(x) for x in lines[5].split()],
+                    [float(x) for x in lines[6].split()],
+                ])
+            except Exception as e:
+                print(f"Warning: Failed to parse calibration file {calib_path}: {e}")
+                # 使用默认值
+                camera_intrinsic = np.array([
+                    [1000, 0, self.image_size[1] / 2],
+                    [0, 1000, self.image_size[0] / 2],
+                    [0, 0, 1],
+                ])
+                camera_extrinsic = np.eye(4)
         else:
-            # 使用默认值（需要根据实际数据集调整）
-            camera_intrinsic = np.array([
-                [1000, 0, self.image_size[1] / 2],
-                [0, 1000, self.image_size[0] / 2],
-                [0, 0, 1],
-            ])
-            camera_extrinsic = np.eye(4)
+            # 修复：如果标定文件不存在，尝试从其他位置加载
+            # 例如：可能存储在JSON或YAML文件中
+            calib_json_path = os.path.join(self.split_dir, 'calibrations', f'{sample_id}.json')
+            if os.path.exists(calib_json_path):
+                import json
+                try:
+                    with open(calib_json_path, 'r') as f:
+                        calib_data = json.load(f)
+                    camera_intrinsic = np.array(calib_data.get('intrinsic', np.eye(3)))
+                    camera_extrinsic = np.array(calib_data.get('extrinsic', np.eye(4)))
+                except Exception as e:
+                    print(f"Warning: Failed to parse JSON calibration file {calib_json_path}: {e}")
+                    camera_intrinsic = np.array([
+                        [1000, 0, self.image_size[1] / 2],
+                        [0, 1000, self.image_size[0] / 2],
+                        [0, 0, 1],
+                    ])
+                    camera_extrinsic = np.eye(4)
+            else:
+                # 修复：如果完全没有标定文件，使用合理的默认值
+                # 但应该警告用户，因为标定参数对3D-2D投影至关重要
+                print(f"Warning: No calibration file found for {sample_id}, using default values")
+                camera_intrinsic = np.array([
+                    [1000, 0, self.image_size[1] / 2],
+                    [0, 1000, self.image_size[0] / 2],
+                    [0, 0, 1],
+                ])
+                camera_extrinsic = np.eye(4)
         
         results['camera_intrinsic'] = torch.from_numpy(camera_intrinsic).float()
         results['camera_extrinsic'] = torch.from_numpy(camera_extrinsic).float()

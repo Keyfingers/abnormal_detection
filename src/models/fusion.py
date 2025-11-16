@@ -48,10 +48,14 @@ class FusionHead(nn.Module):
             ])
             in_channels = hidden_dim
         
-        # 最终输出层：输出单通道异常分数
+        # 修复：最终输出层必须添加Sigmoid激活
+        # 规则要求：输出单一的异常分数通道，并将分数归一化到0-1
+        # Sigmoid确保输出在[0,1]范围内，可以直接作为异常概率
         layers.append(
             nn.Conv2d(hidden_dim, 1, kernel_size=1)
         )
+        # 修复：添加Sigmoid激活函数（规则要求：将分数归一化到0-1）
+        layers.append(nn.Sigmoid())
         
         self.network = nn.Sequential(*layers)
     
@@ -84,6 +88,7 @@ class FusionHead(nn.Module):
         fused_features = torch.cat([features_2d, features_3d], dim=1)  # (B, C_2D+C_3D, H, W)
         
         # 通过融合网络
+        # 修复：网络已经包含Sigmoid，输出已经是[0,1]范围的异常分数
         anomaly_score = self.network(fused_features)  # (B, 1, H, W)
         
         return anomaly_score
@@ -166,22 +171,27 @@ class FusionModel(nn.Module):
         features_3d_sparse = geometric_results['features_3d']
         coords_3d = geometric_results['coords_list']
         
-        # 3D-2D投影
+        # 修复：3D-2D投影（统一设备管理）
         from ..utils.projection import project_3d_to_2d_bilinear
+        
+        # 修复：确保相机参数在正确的设备和格式
+        # 投影函数需要numpy数组，但需要确保设备一致性
+        device = images.device
         
         if isinstance(camera_intrinsic, torch.Tensor):
             camera_intrinsic_np = camera_intrinsic.cpu().numpy()
         else:
-            camera_intrinsic_np = camera_intrinsic
+            camera_intrinsic_np = np.array(camera_intrinsic)
         
         if camera_extrinsic is not None:
             if isinstance(camera_extrinsic, torch.Tensor):
                 camera_extrinsic_np = camera_extrinsic.cpu().numpy()
             else:
-                camera_extrinsic_np = camera_extrinsic
+                camera_extrinsic_np = np.array(camera_extrinsic)
         else:
             camera_extrinsic_np = None
         
+        # 修复：确保投影后的特征图在正确的设备上
         features_3d_2d = project_3d_to_2d_bilinear(
             features_3d_sparse,
             coords_3d,
@@ -190,6 +200,10 @@ class FusionModel(nn.Module):
             image_shape=(images.shape[2], images.shape[3]),
             voxel_size=self.geometric_3d.voxel_size,
         )
+        
+        # 修复：确保特征图在正确的设备上
+        if features_3d_2d.device != device:
+            features_3d_2d = features_3d_2d.to(device)
         
         # 融合
         fusion_score = self.fusion_head(features_2d, features_3d_2d)

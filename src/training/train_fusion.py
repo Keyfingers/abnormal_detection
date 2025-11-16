@@ -15,6 +15,7 @@ from src.models.semantic_2d import Semantic2DBranch
 from src.models.geometric_3d import Geometric3DBranch
 from src.models.fusion import FusionHead, FusionModel
 from src.data.anovox_dataset import AnoVoxDataset
+from src.utils.losses import FocalLoss, DiceLoss, CombinedLoss
 
 
 def collate_fn(batch):
@@ -89,10 +90,10 @@ def train_one_epoch(
                 align_corners=False,
             ).squeeze(1)
         
-        # 计算损失（二元交叉熵）
-        # 将异常分数归一化到[0, 1]
-        fusion_score_normalized = torch.sigmoid(fusion_score)
-        loss = criterion(fusion_score_normalized, anomaly_masks)
+        # 修复：使用Focal Loss或Dice Loss替代BCELoss（规则要求）
+        # 融合头已经包含Sigmoid，输出已经是[0,1]范围，无需再次归一化
+        # Focal Loss能够聚焦于难分类样本，对异常检测特别有效
+        loss = criterion(fusion_score, anomaly_masks)
         
         # 反向传播
         loss.backward()
@@ -153,8 +154,8 @@ def validate(
                     align_corners=False,
                 ).squeeze(1)
             
-            fusion_score_normalized = torch.sigmoid(fusion_score)
-            loss = criterion(fusion_score_normalized, anomaly_masks)
+            # 修复：融合头已经包含Sigmoid，无需再次归一化
+            loss = criterion(fusion_score, anomaly_masks)
             
             total_loss += loss.item()
             num_batches += 1
@@ -262,8 +263,12 @@ def main():
     optimizer = optim.Adam(model.fusion_head.parameters(), lr=args.lr)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
     
-    # 损失函数
-    criterion = nn.BCELoss()
+    # 修复：使用Focal Loss替代BCELoss（规则要求）
+    # Focal Loss能够聚焦于难分类样本，对异常检测任务特别有效
+    # 也可以使用DiceLoss或CombinedLoss，根据实际效果选择
+    criterion = FocalLoss(alpha=0.25, gamma=2.0)
+    # 可选：使用组合损失
+    # criterion = CombinedLoss(focal_alpha=0.25, focal_gamma=2.0, dice_weight=0.5)
     
     # 恢复训练（如果指定）
     start_epoch = 1

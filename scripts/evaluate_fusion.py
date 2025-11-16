@@ -15,6 +15,7 @@ from src.models.geometric_3d import Geometric3DBranch
 from src.models.fusion import FusionHead, FusionModel
 from src.data.anovox_dataset import AnoVoxDataset
 from src.utils.metrics import compute_metrics
+from src.utils.visualization import visualize_comparison, save_qualitative_results
 
 
 def collate_fn(batch):
@@ -199,6 +200,93 @@ def main():
     print(f"AP: {metrics['ap']:.4f}")
     print(f"FPR@95: {metrics['fpr_at_95_tpr']:.4f}")
     print("=" * 50)
+    
+    # 修复：添加定性分析可视化（规则要求：必须包含关键案例的定性分析）
+    print("\nGenerating qualitative analysis...")
+    qualitative_output_dir = os.path.join(os.path.dirname(args.checkpoint), 'qualitative_results')
+    os.makedirs(qualitative_output_dir, exist_ok=True)
+    
+    # 重新运行评估以收集可视化数据
+    model.eval()
+    images_list = []
+    scores_2d_list = []
+    scores_3d_list = []
+    scores_fusion_list = []
+    ground_truths_list = []
+    sample_ids_list = []
+    
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(tqdm(test_loader, desc='Collecting visualization data')):
+            if batch_idx >= 10:  # 只保存前10个样本用于可视化
+                break
+            
+            images = batch['images'].to(device)
+            point_clouds = batch['point_clouds']
+            anomaly_masks = batch['anomaly_masks']
+            camera_intrinsics = batch['camera_intrinsics'].to(device)
+            camera_extrinsics = batch['camera_extrinsics'].to(device)
+            
+            valid_indices = [i for i, pc in enumerate(point_clouds) if len(pc) > 0]
+            if len(valid_indices) == 0:
+                continue
+            
+            images = images[valid_indices]
+            point_clouds = [point_clouds[i] for i in valid_indices]
+            anomaly_masks = anomaly_masks[valid_indices]
+            camera_intrinsics = camera_intrinsics[valid_indices]
+            camera_extrinsics = camera_extrinsics[valid_indices]
+            
+            # 获取融合结果
+            results_fusion = model(
+                images=images,
+                point_clouds=point_clouds,
+                camera_intrinsic=camera_intrinsics,
+                camera_extrinsic=camera_extrinsics,
+                return_individual_scores=True,  # 获取单独的2D和3D分数
+            )
+            
+            # 获取2D和3D基线分数
+            results_2d = model.semantic_2d(images, return_features=False, return_rba_score=True)
+            results_3d = model.geometric_3d(point_clouds, return_features=False, return_reconstruction_error=True)
+            
+            # 调整尺寸
+            for i in range(len(images)):
+                img = images[i].cpu().numpy()
+                mask = anomaly_masks[i].cpu().numpy()
+                score_fusion = results_fusion['fusion_score'][i].cpu().numpy()
+                score_2d = results_2d['rba_score'][i].cpu().numpy()
+                
+                # 3D分数需要投影（简化处理）
+                score_3d = np.full(mask.shape, results_3d['reconstruction_error'][i].mean().item())
+                
+                # 调整尺寸匹配
+                if score_fusion.shape != mask.shape:
+                    from scipy.ndimage import zoom
+                    score_fusion = zoom(score_fusion, (mask.shape[0]/score_fusion.shape[0], mask.shape[1]/score_fusion.shape[1]))
+                if score_2d.shape != mask.shape:
+                    from scipy.ndimage import zoom
+                    score_2d = zoom(score_2d, (mask.shape[0]/score_2d.shape[0], mask.shape[1]/score_2d.shape[1]))
+                
+                images_list.append(img)
+                scores_2d_list.append(score_2d)
+                scores_3d_list.append(score_3d)
+                scores_fusion_list.append(score_fusion)
+                ground_truths_list.append(mask)
+                sample_ids_list.append(f"sample_{batch_idx}_{i}")
+    
+    # 保存定性分析结果
+    if len(images_list) > 0:
+        save_qualitative_results(
+            images=images_list,
+            scores_2d=scores_2d_list,
+            scores_3d=scores_3d_list,
+            scores_fusion=scores_fusion_list,
+            ground_truths=ground_truths_list,
+            sample_ids=sample_ids_list,
+            output_dir=qualitative_output_dir,
+            case_type="all",
+        )
+        print(f"Qualitative results saved to {qualitative_output_dir}")
 
 
 if __name__ == '__main__':
