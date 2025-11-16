@@ -46,8 +46,11 @@ class MinkUNetAutoEncoder(MinkUNetBase):
         
         # 修复：添加最终重建层，输出3维xyz坐标
         # 这是必要的，因为重建任务的目标是恢复原始点云坐标
+        # 注意：输入维度应该是PLANES[-1]（最后一个block的输出维度），而不是feature_dim
+        # PLANES = (32, 64, 128, 256, 256, 128, 96, 96)，最后一个block8输出96维
+        final_feature_dim = self.PLANES[-1]  # 96
         self.reconstruction_head = ME.MinkowskiConvolution(
-            feature_dim, in_channels, kernel_size=1, stride=1, dimension=D
+            final_feature_dim, in_channels, kernel_size=1, stride=1, dimension=D
         )
     
     def forward_with_features(self, x: ME.SparseTensor, mask: Optional[ME.SparseTensor] = None) -> Tuple[ME.SparseTensor, ME.SparseTensor]:

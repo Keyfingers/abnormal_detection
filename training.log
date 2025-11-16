@@ -1,0 +1,69 @@
+Using device: cuda
+Loading dataset...
+Detected nuScenes mini version: v1.0-mini
+======
+Loading NuScenes tables for version v1.0-mini...
+23 category,
+8 attribute,
+4 visibility,
+911 instance,
+12 sensor,
+120 calibrated_sensor,
+31206 ego_pose,
+8 log,
+10 scene,
+404 sample,
+31206 sample_data,
+18538 sample_annotation,
+4 map,
+Done loading in 0.706 seconds.
+======
+Reverse indexing ...
+Done reverse indexing in 0.1 seconds.
+======
+Loaded 9 scenes for train split (total: 10 scenes)
+Detected nuScenes mini version: v1.0-mini
+======
+Loading NuScenes tables for version v1.0-mini...
+23 category,
+8 attribute,
+4 visibility,
+911 instance,
+12 sensor,
+120 calibrated_sensor,
+31206 ego_pose,
+8 log,
+10 scene,
+404 sample,
+31206 sample_data,
+18538 sample_annotation,
+4 map,
+Done loading in 0.508 seconds.
+======
+Reverse indexing ...
+Done reverse indexing in 0.1 seconds.
+======
+Loaded 1 scenes for val split (total: 10 scenes)
+Building model...
+==================================================
+Training 3D Geometric Branch (MinkUNet)
+==================================================
+Data root: /root/autodl-tmp/dataset/nuscenes
+Output dir: outputs/geometric_3d
+Batch size: 2
+Number of epochs: 10
+Mask ratio: 0.3 (30% voxels masked)
+==================================================
+Epoch 1:   0%|          | 0/182 [00:00<?, ?it/s]Epoch 1:   0%|          | 0/182 [00:10<?, ?it/s]
+Traceback (most recent call last):
+  File "/root/autodl-tmp/abnormal_detection/src/training/train_3d_branch.py", line 328, in <module>
+    main()
+  File "/root/autodl-tmp/abnormal_detection/src/training/train_3d_branch.py", line 230, in main
+    train_loss = train_one_epoch(
+  File "/root/autodl-tmp/abnormal_detection/src/training/train_3d_branch.py", line 129, in train_one_epoch
+    loss.backward()
+  File "/root/miniconda3/lib/python3.10/site-packages/torch/_tensor.py", line 492, in backward
+    torch.autograd.backward(
+  File "/root/miniconda3/lib/python3.10/site-packages/torch/autograd/__init__.py", line 251, in backward
+    Variable._execution_engine.run_backward(  # Calls into the C++ engine to run the backward pass
+RuntimeError: element 0 of tensors does not require grad and does not have a grad_fn

@@ -22,7 +22,7 @@ class NuScenesDataset(Dataset):
     def __init__(
         self,
         data_root: str,
-        version: str = 'v1.0-trainval',
+        version: str = None,
         split: str = 'train',
         image_size: Tuple[int, int] = (1024, 2048),
         load_lidar: bool = True,
@@ -31,31 +31,68 @@ class NuScenesDataset(Dataset):
         """
         Args:
             data_root: nuScenes数据根目录
-            version: 数据集版本
+            version: 数据集版本（如果None，自动检测：v1.0-mini 或 v1.0-trainval）
             split: 数据集分割（'train' 或 'val'）
             image_size: 图像尺寸 (H, W)
             load_lidar: 是否加载LiDAR点云
             load_semantic_labels: 是否加载语义分割标签
         """
         self.data_root = data_root
-        self.version = version
         self.split = split
         self.image_size = image_size
         self.load_lidar = load_lidar
         self.load_semantic_labels = load_semantic_labels
         
-        # 初始化nuScenes API
-        self.nusc = NuScenes(
-            version=version,
-            dataroot=data_root,
-            verbose=True,
-        )
+        # 修复：自动检测版本号（支持mini版本）
+        if version is None:
+            # 检查是否存在v1.0-mini目录
+            if os.path.exists(os.path.join(data_root, 'v1.0-mini')):
+                version = 'v1.0-mini'
+                print(f"Detected nuScenes mini version: {version}")
+            else:
+                version = 'v1.0-trainval'
+                print(f"Using default version: {version}")
         
-        # 获取样本列表
+        self.version = version
+        
+        # 初始化nuScenes API
+        try:
+            self.nusc = NuScenes(
+                version=version,
+                dataroot=data_root,
+                verbose=True,
+            )
+        except Exception as e:
+            print(f"Error initializing NuScenes API: {e}")
+            print(f"Trying to detect version automatically...")
+            # 尝试自动检测版本
+            if os.path.exists(os.path.join(data_root, 'v1.0-mini')):
+                version = 'v1.0-mini'
+            elif os.path.exists(os.path.join(data_root, 'v1.0-trainval')):
+                version = 'v1.0-trainval'
+            else:
+                raise ValueError(f"Cannot find nuScenes version in {data_root}")
+            
+            self.version = version
+            self.nusc = NuScenes(
+                version=version,
+                dataroot=data_root,
+                verbose=True,
+            )
+        
+        # 修复：获取样本列表（处理mini版本样本数较少的情况）
+        num_scenes = len(self.nusc.scene)
         if split == 'train':
-            self.scenes = self.nusc.scene[:int(len(self.nusc.scene) * 0.9)]
+            # 对于mini版本，样本数可能很少，使用80%作为训练集
+            split_ratio = 0.8 if num_scenes < 10 else 0.9
+            split_idx = int(num_scenes * split_ratio)
+            self.scenes = self.nusc.scene[:split_idx]
         else:
-            self.scenes = self.nusc.scene[int(len(self.nusc.scene) * 0.9):]
+            split_ratio = 0.8 if num_scenes < 10 else 0.9
+            split_idx = int(num_scenes * split_ratio)
+            self.scenes = self.nusc.scene[split_idx:]
+        
+        print(f"Loaded {len(self.scenes)} scenes for {split} split (total: {num_scenes} scenes)")
         
         # 收集所有样本token
         self.sample_tokens = []
@@ -104,10 +141,18 @@ class NuScenesDataset(Dataset):
         camera_intrinsic = np.array(cam_front_calib['camera_intrinsic'])
         results['camera_intrinsic'] = torch.from_numpy(camera_intrinsic).float()
         
-        # 获取相机外参（从ego到相机）
+        # 修复：获取相机外参（从ego到相机）
+        # nuScenes的rotation是四元数格式 [w, x, y, z]，需要转换为旋转矩阵
+        from pyquaternion import Quaternion
+        
+        translation = np.array(cam_front_calib['translation'])
+        rotation_quat = Quaternion(cam_front_calib['rotation'])  # [w, x, y, z] -> Quaternion对象
+        
+        # 构建4x4变换矩阵
         camera_extrinsic = np.eye(4)
-        camera_extrinsic[:3, :3] = np.array(cam_front_calib['rotation'])
-        camera_extrinsic[:3, 3] = np.array(cam_front_calib['translation'])
+        camera_extrinsic[:3, :3] = rotation_quat.rotation_matrix  # 3x3旋转矩阵
+        camera_extrinsic[:3, 3] = translation  # 3x1平移向量
+        
         results['camera_extrinsic'] = torch.from_numpy(camera_extrinsic).float()
         
         # 加载LiDAR点云（如果指定）

@@ -85,6 +85,7 @@ def train_one_epoch(
         reconstruction_coords = reconstruction.C.float()[:, 1:]  # (M, 3)
         reconstructed_features = reconstruction.F  # (M, 3)
         
+        # 修复：确保梯度流，不能detach重建特征
         # 如果坐标匹配，直接计算L2损失
         if len(original_coords) == len(reconstruction_coords):
             coords_match = torch.allclose(original_coords, reconstruction_coords, atol=1e-3)
@@ -93,35 +94,29 @@ def train_one_epoch(
                 loss = criterion(original_features, reconstructed_features)
             else:
                 # 坐标不匹配，使用最近邻插值
-                
+                # 注意：坐标可以detach（只是用于查找），但特征不能detach
                 original_coords_np = original_coords.detach().cpu().numpy()
                 reconstruction_coords_np = reconstruction_coords.detach().cpu().numpy()
-                reconstructed_features_np = reconstructed_features.detach().cpu().numpy()
                 
                 distances = cdist(original_coords_np, reconstruction_coords_np)
                 nearest_indices = np.argmin(distances, axis=1)
                 
-                nearest_reconstructed = torch.from_numpy(
-                    reconstructed_features_np[nearest_indices]
-                ).to(original_features.device)
+                # 修复：使用索引选择保持梯度
+                nearest_reconstructed = reconstructed_features[nearest_indices]
                 
                 loss = criterion(original_features, nearest_reconstructed)
         else:
             # 坐标数量不匹配，使用chamfer距离的简化版本
             # 计算每个原始点到最近重建点的距离
-            from scipy.spatial.distance import cdist
-            import numpy as np
-            
+            # 注意：坐标可以detach，但特征不能detach
             original_coords_np = original_coords.detach().cpu().numpy()
             reconstruction_coords_np = reconstruction_coords.detach().cpu().numpy()
-            reconstructed_features_np = reconstructed_features.detach().cpu().numpy()
             
             distances = cdist(original_coords_np, reconstruction_coords_np)
             nearest_indices = np.argmin(distances, axis=1)
             
-            nearest_reconstructed = torch.from_numpy(
-                reconstructed_features_np[nearest_indices]
-            ).to(original_features.device)
+            # 修复：使用索引选择保持梯度
+            nearest_reconstructed = reconstructed_features[nearest_indices]
             
             loss = criterion(original_features, nearest_reconstructed)
         
@@ -257,21 +252,23 @@ def main():
                 original_features = original_tensor.F
                 reconstructed_features = reconstruction.F
                 
-                # 简化：如果特征数量相同，直接计算L2损失
+                # 修复：简化损失计算（确保梯度流）
+                reconstructed_features = reconstruction.F
+                
                 if len(original_features) == len(reconstructed_features):
+                    # 直接计算L2损失
                     loss = criterion(original_features, reconstructed_features)
                 else:
                     # 使用最近邻插值
-                    
+                    # 注意：坐标可以detach，但特征不能detach
                     original_coords = original_tensor.C.float()[:, 1:].detach().cpu().numpy()
                     reconstruction_coords = reconstruction.C.float()[:, 1:].detach().cpu().numpy()
-                    reconstructed_features_np = reconstructed_features.detach().cpu().numpy()
                     
                     distances = cdist(original_coords, reconstruction_coords)
                     nearest_indices = np.argmin(distances, axis=1)
-                    nearest_reconstructed = torch.from_numpy(
-                        reconstructed_features_np[nearest_indices]
-                    ).to(original_features.device)
+                    
+                    # 修复：使用索引选择保持梯度
+                    nearest_reconstructed = reconstructed_features[nearest_indices]
                     
                     loss = criterion(original_features, nearest_reconstructed)
                 
