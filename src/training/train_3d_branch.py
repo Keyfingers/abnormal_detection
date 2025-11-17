@@ -101,8 +101,10 @@ def train_one_epoch(
                 distances = cdist(original_coords_np, reconstruction_coords_np)
                 nearest_indices = np.argmin(distances, axis=1)
                 
-                # 修复：使用索引选择保持梯度
-                nearest_reconstructed = reconstructed_features[nearest_indices]
+                # 修复：使用torch的索引选择保持梯度
+                # 将numpy索引转换为torch tensor
+                nearest_indices_torch = torch.from_numpy(nearest_indices).long().to(reconstructed_features.device)
+                nearest_reconstructed = reconstructed_features[nearest_indices_torch]
                 
                 loss = criterion(original_features, nearest_reconstructed)
         else:
@@ -115,8 +117,9 @@ def train_one_epoch(
             distances = cdist(original_coords_np, reconstruction_coords_np)
             nearest_indices = np.argmin(distances, axis=1)
             
-            # 修复：使用索引选择保持梯度
-            nearest_reconstructed = reconstructed_features[nearest_indices]
+            # 修复：使用torch的索引选择保持梯度
+            nearest_indices_torch = torch.from_numpy(nearest_indices).long().to(reconstructed_features.device)
+            nearest_reconstructed = reconstructed_features[nearest_indices_torch]
             
             loss = criterion(original_features, nearest_reconstructed)
         
@@ -191,10 +194,13 @@ def main():
     
     # 模型
     print("Building model...")
+    start_epoch = 1
+    best_loss = float('inf')
+    
     model = Geometric3DBranch(
         in_channels=3,
         feature_dim=args.feature_dim,
-        checkpoint_path=args.resume,
+        checkpoint_path=None,  # 先不加载，后面统一处理
         freeze_backbone=False,
         voxel_size=args.voxel_size,
     )
@@ -203,6 +209,17 @@ def main():
     # 优化器
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.1)
+    
+    # 恢复训练
+    if args.resume:
+        print(f"Loading checkpoint from {args.resume}...")
+        checkpoint = torch.load(args.resume, map_location=device)
+        model.model.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        start_epoch = checkpoint.get('epoch', 1) + 1  # 从下一个epoch开始
+        best_loss = checkpoint.get('loss', float('inf'))
+        print(f"Resumed from epoch {checkpoint.get('epoch', 1)}, best loss: {best_loss:.4f}")
     
     # 损失函数
     criterion = nn.MSELoss()
@@ -215,12 +232,11 @@ def main():
     print(f"Output dir: {args.output_dir}")
     print(f"Batch size: {args.batch_size}")
     print(f"Number of epochs: {args.num_epochs}")
+    print(f"Starting from epoch: {start_epoch}")
     print(f"Mask ratio: 0.3 (30% voxels masked)")  # 修复：显示mask比例
     print("=" * 50)
     
-    best_loss = float('inf')
-    
-    for epoch in range(1, args.num_epochs + 1):
+    for epoch in range(start_epoch, args.num_epochs + 1):
         # 训练（修复：传入mask_ratio参数）
         train_loss = train_one_epoch(
             model, train_loader, optimizer, criterion, device, epoch, mask_ratio=0.3
@@ -267,8 +283,9 @@ def main():
                     distances = cdist(original_coords, reconstruction_coords)
                     nearest_indices = np.argmin(distances, axis=1)
                     
-                    # 修复：使用索引选择保持梯度
-                    nearest_reconstructed = reconstructed_features[nearest_indices]
+                    # 修复：使用torch的索引选择保持梯度
+                    nearest_indices_torch = torch.from_numpy(nearest_indices).long().to(reconstructed_features.device)
+                    nearest_reconstructed = reconstructed_features[nearest_indices_torch]
                     
                     loss = criterion(original_features, nearest_reconstructed)
                 
