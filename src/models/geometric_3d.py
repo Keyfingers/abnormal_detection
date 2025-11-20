@@ -176,11 +176,32 @@ class Geometric3DBranch(nn.Module):
         # 加载权重
         if checkpoint_path and os.path.exists(checkpoint_path):
             checkpoint = torch.load(checkpoint_path, map_location='cpu')
-            if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
-                self.model.load_state_dict(checkpoint['state_dict'])
+            # 处理不同的checkpoint格式
+            if isinstance(checkpoint, dict):
+                if 'model_state_dict' in checkpoint:
+                    # 训练保存的checkpoint格式：包含epoch, model_state_dict等
+                    state_dict = checkpoint['model_state_dict']
+                elif 'state_dict' in checkpoint:
+                    # 标准格式：包含state_dict键
+                    state_dict = checkpoint['state_dict']
+                else:
+                    # 直接是state_dict
+                    state_dict = checkpoint
             else:
-                self.model.load_state_dict(checkpoint)
-            print(f"Loaded checkpoint from {checkpoint_path}")
+                state_dict = checkpoint
+            
+            # 加载state_dict，忽略不匹配的键（因为可能结构略有不同）
+            try:
+                self.model.load_state_dict(state_dict, strict=False)
+                print(f"Loaded checkpoint from {checkpoint_path}")
+            except RuntimeError as e:
+                print(f"Warning: Some keys were not loaded: {e}")
+                # 尝试部分加载
+                model_dict = self.model.state_dict()
+                pretrained_dict = {k: v for k, v in state_dict.items() if k in model_dict}
+                model_dict.update(pretrained_dict)
+                self.model.load_state_dict(model_dict)
+                print(f"Partially loaded checkpoint from {checkpoint_path}")
         
         # 冻结主干网络（如果指定）
         if freeze_backbone:
@@ -320,6 +341,9 @@ class Geometric3DBranch(nn.Module):
         coords_list = []
         
         for batch_idx, pc in enumerate(point_clouds):
+            # 确保输入是连续的numpy数组
+            pc = np.ascontiguousarray(pc, dtype=np.float32)
+            
             # 量化坐标
             coords, feats, inds = ME.utils.sparse_quantize(
                 pc / self.voxel_size,
@@ -329,8 +353,11 @@ class Geometric3DBranch(nn.Module):
             
             # 添加batch索引
             batch_coord = np.column_stack([np.full(len(coords), batch_idx), coords])
-            batch_coords.append(torch.from_numpy(batch_coord).int())
-            batch_feats.append(torch.from_numpy(feats).float())
+            # 确保tensor是连续的（Minkowski Engine要求）
+            coord_tensor = torch.from_numpy(batch_coord).contiguous().int()
+            batch_coords.append(coord_tensor)
+            feat_tensor = torch.from_numpy(feats).contiguous().float()
+            batch_feats.append(feat_tensor)
             coords_list.append(coords * self.voxel_size)  # 保存原始坐标
         
         # 修复：统一设备管理

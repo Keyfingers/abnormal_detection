@@ -1,0 +1,32 @@
+# nuScenes语义分割配置文件（基于Cityscapes配置）
+_BASE_: "../RbA/configs/cityscapes/semantic-segmentation/swin/single_decoder_layer/maskformer2_swin_base_IN21k_384_bs16_90k_1dl.yaml"
+
+MODEL:
+  # 覆盖基础配置中的WEIGHTS，不使用预训练权重（从头训练）
+  WEIGHTS: ""
+  SEM_SEG_HEAD:
+    NUM_CLASSES: 19  # nuScenes语义类别数（与Cityscapes相同）
+
+DATASETS:
+  # 使用nuScenes数据集（需要在训练脚本中注册）
+  TRAIN: ("nuscenes_sem_seg_train",)
+  TEST: ("nuscenes_sem_seg_val",)
+
+SOLVER:
+  # 调整训练参数以适应nuScenes
+  IMS_PER_BATCH: 4  # 减小batch size（nuScenes图像较大）
+  BASE_LR: 0.0001
+  MAX_ITER: 50000  # 减少迭代次数（nuScenes样本数较少）
+  WARMUP_ITERS: 1000
+
+INPUT:
+  # 调整输入尺寸以适应nuScenes图像
+  MIN_SIZE_TRAIN: (512, 768, 1024)
+  MIN_SIZE_TEST: 1024
+  MAX_SIZE_TRAIN: 2048
+  MAX_SIZE_TEST: 2048
+  CROP:
+    ENABLED: True
+    TYPE: "absolute"
+    SIZE: (512, 1024)
+

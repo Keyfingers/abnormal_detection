@@ -185,7 +185,9 @@ class NuScenesSemanticDataset(NuScenesDataset):
     """
     
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, load_semantic_labels=True, **kwargs)
+        # 确保load_semantic_labels为True，避免重复传递
+        kwargs['load_semantic_labels'] = True
+        super().__init__(*args, **kwargs)
     
     def __getitem__(self, idx: int) -> Dict:
         sample = super().__getitem__(idx)

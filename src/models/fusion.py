@@ -5,93 +5,87 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Tuple, Optional
+import numpy as np
 
-
-class FusionHead(nn.Module):
+class GatedAdapterFusionHead(nn.Module):
     """
-    融合头：轻量级的2D卷积网络，融合2D和3D特征
-    
-    输入：
-    - 2D语义特征图 (B, C_2D, H, W)
-    - 3D投影特征图 (B, C_3D, H, W)
-    
-    输出：
-    - 融合异常分数图 (B, 1, H, W)
+    门控适配器融合头：使用门控机制和瓶颈适配器融合特征
+    符合 "Feature Splatting + Adapter" 范式
     """
-    
     def __init__(
         self,
         feature_2d_dim: int = 256,
         feature_3d_dim: int = 128,
         hidden_dim: int = 256,
-        num_layers: int = 4,
     ):
-        """
-        Args:
-            feature_2d_dim: 2D特征维度
-            feature_3d_dim: 3D特征维度
-            hidden_dim: 隐藏层维度
-            num_layers: 卷积层数量
-        """
         super().__init__()
         
-        input_dim = feature_2d_dim + feature_3d_dim
+        # 1. 特征对齐 (Projectors)
+        self.align_2d = nn.Conv2d(feature_2d_dim, hidden_dim, kernel_size=1)
+        self.align_3d = nn.Conv2d(feature_3d_dim, hidden_dim, kernel_size=1)
+        self.bn_2d = nn.BatchNorm2d(hidden_dim)
+        self.bn_3d = nn.BatchNorm2d(hidden_dim)
         
-        layers = []
-        in_channels = input_dim
-        
-        for i in range(num_layers):
-            layers.extend([
-                nn.Conv2d(in_channels, hidden_dim, kernel_size=3, padding=1),
-                nn.BatchNorm2d(hidden_dim),
-                nn.ReLU(inplace=True),
-            ])
-            in_channels = hidden_dim
-        
-        # 修复：最终输出层必须添加Sigmoid激活
-        # 规则要求：输出单一的异常分数通道，并将分数归一化到0-1
-        # Sigmoid确保输出在[0,1]范围内，可以直接作为异常概率
-        layers.append(
-            nn.Conv2d(hidden_dim, 1, kernel_size=1)
+        # 2. 门控网络 (Gating Mechanism)
+        # 决定在每个像素点更信任哪个模态
+        self.gate_net = nn.Sequential(
+            nn.Conv2d(hidden_dim * 2, hidden_dim // 2, kernel_size=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(hidden_dim // 2, 1, kernel_size=1),
+            nn.Sigmoid()  # 输出 [0, 1] 权重
         )
-        # 修复：添加Sigmoid激活函数（规则要求：将分数归一化到0-1）
-        layers.append(nn.Sigmoid())
         
-        self.network = nn.Sequential(*layers)
-    
+        # 3. 瓶颈适配器 (Bottleneck Adapter)
+        # 用于参数高效微调 (PEFT)
+        self.adapter = nn.Sequential(
+            nn.Conv2d(hidden_dim, hidden_dim // 4, kernel_size=1), # 降维
+            nn.ReLU(inplace=True),
+            nn.Conv2d(hidden_dim // 4, hidden_dim, kernel_size=1), # 升维
+            nn.Sigmoid() # 输出作为缩放因子
+        )
+        
+        # 4. 预测头 (Prediction Head)
+        self.head = nn.Sequential(
+            nn.Conv2d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
+            nn.BatchNorm2d(hidden_dim),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(hidden_dim, 1, kernel_size=1),
+            nn.Sigmoid() # 输出异常概率
+        )
+
     def forward(
         self,
         features_2d: torch.Tensor,
         features_3d: torch.Tensor,
     ) -> torch.Tensor:
-        """
-        前向传播
-        
-        Args:
-            features_2d: 2D语义特征图 (B, C_2D, H, W)
-            features_3d: 3D投影特征图 (B, C_3D, H, W)
-        
-        Returns:
-            融合异常分数图 (B, 1, H, W)
-        """
-        # 确保特征图尺寸一致
+        # 确保尺寸一致
         if features_2d.shape[-2:] != features_3d.shape[-2:]:
-            # 上采样3D特征图到2D特征图尺寸
             features_3d = F.interpolate(
                 features_3d,
                 size=features_2d.shape[-2:],
                 mode='bilinear',
                 align_corners=False,
             )
+            
+        # 对齐特征
+        f2d = F.relu(self.bn_2d(self.align_2d(features_2d)))
+        f3d = F.relu(self.bn_3d(self.align_3d(features_3d)))
         
-        # 沿通道维度拼接
-        fused_features = torch.cat([features_2d, features_3d], dim=1)  # (B, C_2D+C_3D, H, W)
+        # 计算门控权重
+        # Gate 接近 1 表示信任 2D，接近 0 表示信任 3D
+        gate_input = torch.cat([f2d, f3d], dim=1)
+        gate = self.gate_net(gate_input)
         
-        # 通过融合网络
-        # 修复：网络已经包含Sigmoid，输出已经是[0,1]范围的异常分数
-        anomaly_score = self.network(fused_features)  # (B, 1, H, W)
+        # 加权融合
+        f_fused = gate * f2d + (1 - gate) * f3d
         
-        return anomaly_score
+        # 通过适配器增强 (Residual Connection)
+        # Adapter 输出一个缩放因子，调制融合特征
+        adapter_scale = self.adapter(f_fused)
+        f_enhanced = f_fused * (1 + adapter_scale)
+        
+        # 预测
+        return self.head(f_enhanced)
 
 
 class FusionModel(nn.Module):
@@ -171,11 +165,10 @@ class FusionModel(nn.Module):
         features_3d_sparse = geometric_results['features_3d']
         coords_3d = geometric_results['coords_list']
         
-        # 修复：3D-2D投影（统一设备管理）
-        from ..utils.projection import project_3d_to_2d_bilinear
+        # 3D-2D投影（使用 Gaussian Splatting）
+        from ..utils.projection import project_3d_to_2d_gaussian
         
         # 修复：确保相机参数在正确的设备和格式
-        # 投影函数需要numpy数组，但需要确保设备一致性
         device = images.device
         
         if isinstance(camera_intrinsic, torch.Tensor):
@@ -191,17 +184,19 @@ class FusionModel(nn.Module):
         else:
             camera_extrinsic_np = None
         
-        # 修复：确保投影后的特征图在正确的设备上
-        features_3d_2d = project_3d_to_2d_bilinear(
+        # 调用 Gaussian Splatting
+        features_3d_2d = project_3d_to_2d_gaussian(
             features_3d_sparse,
             coords_3d,
             camera_intrinsic_np,
             camera_extrinsic_np,
             image_shape=(images.shape[2], images.shape[3]),
             voxel_size=self.geometric_3d.voxel_size,
+            kernel_radius=3, # 可配置：对应高斯核半径
+            sigma=1.0        # 可配置：高斯方差
         )
         
-        # 修复：确保特征图在正确的设备上
+        # 确保特征图在正确的设备上
         if features_3d_2d.device != device:
             features_3d_2d = features_3d_2d.to(device)
         
@@ -217,4 +212,3 @@ class FusionModel(nn.Module):
             results['reconstruction_error'] = geometric_results['reconstruction_error']
         
         return results
-

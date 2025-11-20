@@ -1,0 +1,6 @@
+*.npy
+*.pth
+*.sh
+*.log
+*.pyc
+*.txt

@@ -10,12 +10,52 @@ from typing import Dict, Tuple, Optional
 import numpy as np
 
 # 添加RbA路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../RbA'))
+rbA_path = os.path.join(os.path.dirname(__file__), '../../RbA')
+sys.path.insert(0, rbA_path)
 from detectron2.config import get_cfg
 from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.modeling import build_model
 from mask2former import add_maskformer2_config
 from mask2former.modeling.meta_arch.mask_former_head import MaskFormerHead
+
+# 导入RbA的setup函数（用于正确加载配置）
+try:
+    # 需要先设置detectron2的默认设置
+    from detectron2.utils.logger import setup_logger
+    from detectron2.utils import comm
+    from detectron2.engine import default_setup
+    from detectron2.projects.deeplab import add_deeplab_config
+    
+    # 初始化comm（单GPU模式）
+    if not comm.is_main_process():
+        comm.init_process_group("gloo", init_method="tcp://localhost:23456", rank=0, world_size=1)
+    
+    def rbA_setup(args):
+        """RbA风格的配置加载"""
+        cfg = get_cfg()
+        add_deeplab_config(cfg)
+        add_maskformer2_config(cfg)
+        cfg.merge_from_file(args.config_file)
+        if hasattr(args, 'opts') and args.opts:
+            cfg.merge_from_list(args.opts)
+        cfg.freeze()
+        default_setup(cfg, args)
+        setup_logger(output=cfg.OUTPUT_DIR, distributed_rank=comm.get_rank(), name="mask2former")
+        return cfg
+    
+    try:
+        from easydict import EasyDict as edict
+    except ImportError:
+        # 如果没有easydict，使用普通字典
+        class edict(dict):
+            def __getattr__(self, name):
+                return self[name]
+            def __setattr__(self, name, value):
+                self[name] = value
+    USE_RBA_SETUP = True
+except Exception as e:
+    print(f"警告: 无法使用RbA setup函数 ({e})，将使用手动配置加载")
+    USE_RBA_SETUP = False
 
 
 class Semantic2DBranch(nn.Module):
@@ -42,14 +82,35 @@ class Semantic2DBranch(nn.Module):
         """
         super().__init__()
         
-        # 加载配置
-        self.cfg = get_cfg()
-        add_maskformer2_config(self.cfg)
-        self.cfg.merge_from_file(config_path)
+        # 使用RbA的setup函数加载配置（推荐方法）
+        if USE_RBA_SETUP:
+            print("使用RbA的setup函数加载配置")
+            args = edict({
+                'config_file': config_path,
+                'eval-only': True,
+                'opts': ['OUTPUT_DIR', 'output/']
+            })
+            self.cfg = rbA_setup(args)
+        else:
+            # 回退到手动加载配置
+            print("使用手动配置加载")
+            self.cfg = get_cfg()
+            add_maskformer2_config(self.cfg)
+            try:
+                self.cfg.merge_from_file(config_path)
+            except Exception as e:
+                print(f"警告: 配置加载失败 ({e})")
+                raise
+        
         self.cfg.freeze()
         
         # 构建模型
-        self.model = build_model(self.cfg)
+        print(f"构建模型，META_ARCHITECTURE={self.cfg.MODEL.META_ARCHITECTURE}")
+        if USE_RBA_SETUP:
+            from train_net import Trainer
+            self.model = Trainer.build_model(self.cfg)
+        else:
+            self.model = build_model(self.cfg)
         
         # 加载权重
         if checkpoint_path and os.path.exists(checkpoint_path):
@@ -62,7 +123,13 @@ class Semantic2DBranch(nn.Module):
             for param in self.model.backbone.parameters():
                 param.requires_grad = False
         
+        # 设置为评估模式，避免计算损失
         self.model.eval()
+        # 确保criterion不会在推理时被调用
+        if hasattr(self.model, 'criterion') and self.model.criterion is not None:
+            # 临时禁用criterion，避免在推理时计算损失
+            self._original_criterion = self.model.criterion
+            self.model.criterion = None
     
     def forward(
         self,
@@ -84,12 +151,20 @@ class Semantic2DBranch(nn.Module):
             - 'features_2d': 2D特征图 (B, C_2D, H, W) [可选]
             - 'rba_score': RbA异常评分 (B, H, W) [可选]
         """
-        with torch.no_grad() if not self.training else torch.enable_grad():
+        # 确保在eval模式下运行，避免计算损失
+        was_training = self.model.training
+        self.model.eval()
+        
+        with torch.no_grad():
             # 准备输入（Detectron2格式）
             inputs = [{"image": img} for img in images]
             
-            # 前向传播
+            # 前向传播（在eval模式下，不会计算损失）
             outputs = self.model(inputs)
+        
+        # 恢复训练状态（如果需要）
+        if was_training:
+            self.model.train()
             
             results = {}
             

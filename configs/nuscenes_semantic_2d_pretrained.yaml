@@ -1,0 +1,22 @@
+# nuScenes语义分割配置文件（使用Cityscapes预训练模型）
+# 基于Cityscapes预训练的Mask2Former，在nuScenes上提取特征
+
+# 直接使用模型目录下的配置文件（包含所有必要的配置）
+_BASE_: /root/autodl-tmp/abnormal_detection/RbA/ckpts/swin_b_1dl/swin_b_1dl/config.yaml
+
+MODEL:
+  # 使用Cityscapes预训练的完整模型权重
+  WEIGHTS: "./RbA/ckpts/swin_b_1dl/swin_b_1dl/model_final.pth"
+  
+  # 特征提取时冻结所有参数
+  FREEZE_BACKBONE: true
+  FREEZE_PIXEL_DECODER: true
+  FREEZE_TRANSFORMER_DECODER: true
+
+DATASETS:
+  # 特征提取不需要数据集注册，使用自定义数据集加载器
+  TRAIN: ()
+  TEST: ()
+
+OUTPUT_DIR: "./outputs/semantic_2d"
+

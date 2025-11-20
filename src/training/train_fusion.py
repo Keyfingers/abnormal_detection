@@ -15,6 +15,7 @@ from src.models.semantic_2d import Semantic2DBranch
 from src.models.geometric_3d import Geometric3DBranch
 from src.models.fusion import FusionHead, FusionModel
 from src.data.anovox_dataset import AnoVoxDataset
+from src.data.anovox_normality_dataset import AnoVoxNormalityDataset
 from src.utils.losses import FocalLoss, DiceLoss, CombinedLoss
 
 
@@ -202,14 +203,30 @@ def main():
     
     # 数据集
     print("Loading dataset...")
-    train_dataset = AnoVoxDataset(
-        data_root=args.data_root,
-        split='train',
-    )
-    val_dataset = AnoVoxDataset(
-        data_root=args.data_root,
-        split='test',
-    )
+    # 修复：根据项目规则，阶段4使用"常态"训练集训练融合头
+    # 如果数据格式是AnoVox_Normality格式，使用AnoVoxNormalityDataset
+    # 否则使用标准的AnoVoxDataset
+    normality_dir = os.path.join(args.data_root, 'AnoVox_Normality_Mono_Town03')
+    if os.path.exists(normality_dir) or 'Normality' in args.data_root:
+        print("检测到AnoVox Normality格式，使用AnoVoxNormalityDataset")
+        train_dataset = AnoVoxNormalityDataset(
+            data_root=args.data_root,
+            split='train',
+        )
+        val_dataset = AnoVoxNormalityDataset(
+            data_root=args.data_root,
+            split='test',
+        )
+    else:
+        print("使用标准AnoVoxDataset")
+        train_dataset = AnoVoxDataset(
+            data_root=args.data_root,
+            split='train',
+        )
+        val_dataset = AnoVoxDataset(
+            data_root=args.data_root,
+            split='test',
+        )
     
     train_loader = DataLoader(
         train_dataset,
