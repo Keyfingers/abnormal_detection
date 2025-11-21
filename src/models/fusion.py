@@ -88,6 +88,10 @@ class GatedAdapterFusionHead(nn.Module):
         return self.head(f_enhanced)
 
 
+# 为了兼容性，添加别名
+FusionHead = GatedAdapterFusionHead
+
+
 class FusionModel(nn.Module):
     """
     完整的融合模型：包含2D分支、3D分支和融合头

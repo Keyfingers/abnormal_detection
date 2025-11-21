@@ -35,7 +35,16 @@ try:
         cfg = get_cfg()
         add_deeplab_config(cfg)
         add_maskformer2_config(cfg)
+        
+        # 修复：允许加载配置文件中未定义的键（如 MODEL.INCREMENTAL）
+        cfg.set_new_allowed(True)
+        
         cfg.merge_from_file(args.config_file)
+        
+        # 强制修复：确保DATASETS.TRAIN不为空（Mask2Former初始化需要metadata）
+        if not cfg.DATASETS.TRAIN:
+            cfg.DATASETS.TRAIN = ("cityscapes_fine_sem_seg_train",)
+            
         if hasattr(args, 'opts') and args.opts:
             cfg.merge_from_list(args.opts)
         cfg.freeze()
@@ -155,23 +164,26 @@ class Semantic2DBranch(nn.Module):
         was_training = self.model.training
         self.model.eval()
         
-        with torch.no_grad():
-            # 准备输入（Detectron2格式）
-            inputs = [{"image": img} for img in images]
-            
-            # 前向传播（在eval模式下，不会计算损失）
-            outputs = self.model(inputs)
+        results = {}  # 提前初始化
         
-        # 恢复训练状态（如果需要）
-        if was_training:
-            self.model.train()
-            
-            results = {}
+        try:
+            with torch.no_grad():
+                # 准备输入（Detectron2格式）
+                inputs = [{"image": img} for img in images]
+                
+                # 前向传播（在eval模式下，不会计算损失）
+                outputs = self.model(inputs)
             
             # 提取语义分割logits
-            sem_seg_logits = outputs[0]['sem_seg']  # (K, H, W)
-            if len(sem_seg_logits.shape) == 3:
-                sem_seg_logits = sem_seg_logits.unsqueeze(0)  # (1, K, H, W)
+            # Detectron2 eval模式返回列表，每个元素对应一个batch样本
+            if isinstance(outputs, list):
+                sem_seg_logits_list = [o['sem_seg'] for o in outputs]
+                sem_seg_logits = torch.stack(sem_seg_logits_list) # (B, K, H, W)
+            else:
+                sem_seg_logits = outputs['sem_seg']
+                if len(sem_seg_logits.shape) == 3:
+                    sem_seg_logits = sem_seg_logits.unsqueeze(0)
+                    
             results['sem_seg'] = sem_seg_logits
             
             # 提取2D特征图（用于融合）
@@ -183,8 +195,13 @@ class Semantic2DBranch(nn.Module):
             if return_rba_score:
                 rba_score = self._compute_rba_score(sem_seg_logits)
                 results['rba_score'] = rba_score
+                
+        finally:
+            # 恢复训练状态（如果需要）
+            if was_training:
+                self.model.train()
             
-            return results
+        return results
     
     def _extract_pixel_decoder_features(
         self,
@@ -271,4 +288,3 @@ class Semantic2DBranch(nn.Module):
     def get_rba_score(self, images: torch.Tensor) -> torch.Tensor:
         """获取RbA异常评分（用于基线）"""
         return self.forward(images, return_features=False, return_rba_score=True)['rba_score']
-

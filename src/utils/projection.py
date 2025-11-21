@@ -529,7 +529,8 @@ def project_3d_to_2d_gaussian(
                 weight_view.index_add_(1, flat_idx, weights_vec.unsqueeze(0))
 
     # 归一化
-    non_zero_mask = weight_map > 1e-6
-    feature_map_2d[non_zero_mask.expand_as(feature_map_2d)] /= weight_map[non_zero_mask].expand_as(feature_map_2d)
+    # 修复：使用广播机制避免索引错误，并添加epsilon防止除零
+    weight_map = torch.clamp(weight_map, min=1e-6)
+    feature_map_2d = feature_map_2d / weight_map
     
     return feature_map_2d

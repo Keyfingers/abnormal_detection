@@ -14,9 +14,9 @@ MODEL:
   FREEZE_TRANSFORMER_DECODER: true
 
 DATASETS:
-  # 特征提取不需要数据集注册，使用自定义数据集加载器
-  TRAIN: ()
-  TEST: ()
+  # 使用Cityscapes的metadata来保持类别一致性
+  TRAIN: ("cityscapes_fine_sem_seg_train",)
+  TEST: ("cityscapes_fine_sem_seg_val",)
 
 OUTPUT_DIR: "./outputs/semantic_2d"
 
