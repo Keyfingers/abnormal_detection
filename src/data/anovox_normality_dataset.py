@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Tuple
 from PIL import Image
 import cv2
 import glob
+import random
 
 
 class AnoVoxNormalityDataset(Dataset):
@@ -21,7 +22,7 @@ class AnoVoxNormalityDataset(Dataset):
     AnoVox Normality数据集加载器
     
     用于阶段四（融合模块）的训练
-    所有样本都是"常态"，异常掩码全为0
+    通过CutPaste策略生成伪异常（Pseudo-Anomaly）
     """
     
     def __init__(
@@ -71,15 +72,58 @@ class AnoVoxNormalityDataset(Dataset):
     def __len__(self) -> int:
         return len(self.pointcloud_files)
     
+    def _apply_cutpaste(self, image: torch.Tensor, mask: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        应用 CutPaste 数据增强来模拟异常
+        
+        原理：将图像的一部分剪切并粘贴到另一位置，制造视觉与几何的不一致性
+        """
+        h, w = image.shape[1], image.shape[2]
+        
+        # 随机选择 patch 大小 (图像面积的 2% 到 15%)
+        area_ratio = random.uniform(0.02, 0.15)
+        aspect_ratio = random.uniform(0.3, 3.3)
+        
+        patch_area = h * w * area_ratio
+        patch_h = int((patch_area * aspect_ratio) ** 0.5)
+        patch_w = int((patch_area / aspect_ratio) ** 0.5)
+        
+        # 边界检查
+        patch_h = min(max(patch_h, 10), h - 1)
+        patch_w = min(max(patch_w, 10), w - 1)
+        
+        # 源位置
+        src_y = random.randint(0, h - patch_h)
+        src_x = random.randint(0, w - patch_w)
+        
+        # 目标位置
+        dst_y = random.randint(0, h - patch_h)
+        dst_x = random.randint(0, w - patch_w)
+        
+        # 提取 patch
+        patch = image[:, src_y:src_y+patch_h, src_x:src_x+patch_w].clone()
+        
+        # 可选：对 patch 进行颜色增强，使其更像"异物"
+        if random.random() < 0.5:
+            patch = patch * random.uniform(0.8, 1.2)
+            
+        # 粘贴
+        image[:, dst_y:dst_y+patch_h, dst_x:dst_x+patch_w] = patch
+        
+        # 更新 mask (粘贴区域标记为异常)
+        mask[dst_y:dst_y+patch_h, dst_x:dst_x+patch_w] = 1.0
+        
+        return image, mask
+
     def __getitem__(self, idx: int) -> Dict:
         """
         获取一个样本
         
         Returns:
             Dict包含：
-            - 'image': 图像 (3, H, W) - 占位符或实际图像
+            - 'image': 图像 (3, H, W)
             - 'point_cloud': 点云 (N, 3)
-            - 'anomaly_mask': 异常掩码 (H, W) - 全0（常态数据）
+            - 'anomaly_mask': 异常掩码 (H, W)
             - 'camera_intrinsic': 相机内参 (3, 3)
             - 'camera_extrinsic': 相机外参 (4, 4)
             - 'sample_id': 样本ID
@@ -103,12 +147,13 @@ class AnoVoxNormalityDataset(Dataset):
         results['point_cloud'] = point_cloud
         
         # 创建占位符图像（因为数据集可能没有图像）
-        # 在实际应用中，可能需要从其他来源获取图像，或使用点云渲染
         if self.use_placeholder_image:
-            # 创建全黑图像作为占位符
-            # 注意：融合训练时，2D分支会从实际输入图像提取特征
-            # 这里只是占位符，实际训练时会使用真实的图像输入
+            # 注意：如果是占位符图像（全黑），CutPaste效果可能不明显
+            # 但为了流程完整性，我们仍然执行。
+            # 理想情况下应该加载真实图像。
             image = torch.zeros((3, self.image_size[0], self.image_size[1]), dtype=torch.float32)
+            # 如果是全黑图像，加点噪声以便CutPaste有东西可切
+            image = torch.randn_like(image) * 0.1
         else:
             # 尝试查找图像文件（如果存在）
             image_path = pc_path.replace('.npy', '.jpg').replace('LIDAR', 'CAMERA')
@@ -123,12 +168,17 @@ class AnoVoxNormalityDataset(Dataset):
                 image = torch.from_numpy(image)
             else:
                 image = torch.zeros((3, self.image_size[0], self.image_size[1]), dtype=torch.float32)
+                image = torch.randn_like(image) * 0.1
         
-        results['image'] = image
-        
-        # 异常掩码：全0（因为这是"常态"训练数据）
-        # 所有样本都是正常的，没有异常区域
+        # 异常掩码初始化
         anomaly_mask = torch.zeros((self.image_size[0], self.image_size[1]), dtype=torch.float32)
+        
+        # 修复：引入伪异常生成 (CutPaste)
+        # 50% 概率生成伪异常，仅在训练时
+        if self.split == 'train' and random.random() < 0.5:
+            image, anomaly_mask = self._apply_cutpaste(image, anomaly_mask)
+            
+        results['image'] = image
         results['anomaly_mask'] = anomaly_mask
         
         # 相机标定：使用默认值

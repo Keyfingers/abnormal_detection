@@ -2,7 +2,7 @@ CUDNN_BENCHMARK: false
 DATALOADER:
   ASPECT_RATIO_GROUPING: true
   FILTER_EMPTY_ANNOTATIONS: true
-  NUM_WORKERS: 10
+  NUM_WORKERS: 4
   REPEAT_SQRT: true
   REPEAT_THRESHOLD: 0.0
   SAMPLER_TRAIN: TrainingSampler
@@ -15,13 +15,13 @@ DATASETS:
   - cityscapes_fine_sem_seg_val
   TRAIN:
   - cityscapes_fine_sem_seg_train
-  UNSEEN_LABEL_SET: ''
+  UNSEEN_LABEL_SET: datasets/unknown/unknown_K20.txt
 FLOAT32_PRECISION: ''
 GLOBAL:
   HACK: 1.0
 INPUT:
   COCO_PROXY_SIZE: 300
-  COCO_ROOT: COCO/
+  COCO_ROOT: coco/
   COLOR_AUG_SSD: true
   CROP:
     ENABLED: true
@@ -89,41 +89,12 @@ MODEL:
     IN_FEATURES: []
     NORM: ''
     OUT_CHANNELS: 256
-  FREEZE_BACKBONE: true
-  FREEZE_PIXEL_DECODER: true
-  FREEZE_TRANSFORMER_DECODER: true
+  FREEZE_BACKBONE: false
+  FREEZE_PIXEL_DECODER: false
+  FREEZE_TRANSFORMER_DECODER: false
   FREEZE_TRANSFORMER_DECODER_EXCEPT_MLP: false
   FREEZE_TRANSFORMER_DECODER_EXCEPT_MLP_AND_OOD_PRED: false
   FREEZE_TRANSFORMER_DECODER_EXCEPT_OBJECT_QUERIES: false
-  INCREMENTAL:
-    CLASS_OFFSETS:
-    - 0
-    - 0
-    - 0
-    - 0
-    - 0
-    - 0
-    - 0
-    - 0
-    - 0
-    - 0
-    - 0
-    - 0
-    - 0
-    - 0
-    - 0
-    - 0
-    - 0
-    - 0
-    - 0
-    FINETUNE_ALL: false
-    FINETUNE_MASKS: false
-    FINETUNE_OBJECT_QUERIES: false
-    FINETUNE_PIXEL_DECODER: false
-    FINETUNE_TRANSFORMER_DECODER: false
-    MODE: false
-    NUM_NOVEL_CLASSES: 3
-    QUERIES_PER_CLASS: 1
   KEYPOINT_ON: false
   LOAD_PROPOSALS: false
   MASK_FORMER:
@@ -148,8 +119,8 @@ MODEL:
     NHEADS: 8
     NO_OBJECT_WEIGHT: 0.1
     NUM_OBJECT_QUERIES: 100
-    OPEN_PANOPTIC: false
-    OUTLIER_LOSS_FUNC: max
+    OPEN_PANOPTIC: true
+    OUTLIER_LOSS_FUNC: squared_hinge
     OUTLIER_LOSS_TARGET: none
     OUTLIER_LOWER_THRESHOLD: -0.1
     OUTLIER_SUPERVISION: false
@@ -159,10 +130,10 @@ MODEL:
     PEBAL_REWARD: 4.5
     PRE_NORM: false
     SCORE_NORM: none
-    SEM_SEG_UNLABELED_REGION: false
+    SEM_SEG_UNLABELED_REGION: true
     SIZE_DIVISIBILITY: 32
     SMOOTHNESS_LOSS: false
-    SMOOTHNESS_SCORE: none
+    SMOOTHNESS_SCORE: energy
     SMOOTHNESS_WEIGHT: 3.0e-06
     SPARSITY_LOSS: false
     SPARSITY_WEIGHT: 0.0005
@@ -176,7 +147,7 @@ MODEL:
     TRAIN_NUM_POINTS: 12544
     TRANSFORMER_DECODER_NAME: MultiScaleMaskedTransformerDecoder
     TRANSFORMER_IN_FEATURE: multi_scale_pixel_decoder
-    UNLABELED_REGION: false
+    UNLABELED_REGION: true
     USE_POINT_REND: false
   MASK_ON: false
   META_ARCHITECTURE: MaskFormer
@@ -187,7 +158,7 @@ MODEL:
     DEPTH: 24
     DROP_PATH_RATE: 0.4
     EMBED_DIM: 96
-    IMG_SIZE: 512
+    IMG_SIZE: 224
     IN_CHANS: 3
     LAST_BLOCK_INDEXES:
     - 1
@@ -205,7 +176,7 @@ MODEL:
     PATCH_KERNEL:
     - 7
     - 7
-    PATCH_PADDING:
+    PATCH_PADDING: &id001
     - 3
     - 3
     PATCH_STRIDE:
@@ -214,9 +185,7 @@ MODEL:
     PRETRAIN_IMG_SIZE: 224
     PRETRAIN_USE_CLS_TOKEN: true
     QKV_BIAS: true
-    QKV_POOL_KERNEL:
-    - 3
-    - 3
+    QKV_POOL_KERNEL: *id001
     REL_POS_ZERO_INIT: true
     RESIDUAL_POOLING: true
     USE_ABS_POS: false
@@ -269,7 +238,7 @@ MODEL:
     WIDTH_PER_GROUP: 64
   RETINANET:
     BBOX_REG_LOSS_TYPE: smooth_l1
-    BBOX_REG_WEIGHTS:
+    BBOX_REG_WEIGHTS: &id003
     - 1.0
     - 1.0
     - 1.0
@@ -299,7 +268,8 @@ MODEL:
     TOPK_CANDIDATES_TEST: 1000
   ROI_BOX_CASCADE_HEAD:
     BBOX_REG_WEIGHTS:
-    - - 10.0
+    - &id002
+      - 10.0
       - 10.0
       - 5.0
       - 5.0
@@ -318,11 +288,7 @@ MODEL:
   ROI_BOX_HEAD:
     BBOX_REG_LOSS_TYPE: smooth_l1
     BBOX_REG_LOSS_WEIGHT: 1.0
-    BBOX_REG_WEIGHTS:
-    - 10.0
-    - 10.0
-    - 5.0
-    - 5.0
+    BBOX_REG_WEIGHTS: *id002
     CLS_AGNOSTIC_BBOX_REG: false
     CONV_DIM: 256
     FC_DIM: 1024
@@ -385,11 +351,7 @@ MODEL:
     BATCH_SIZE_PER_IMAGE: 256
     BBOX_REG_LOSS_TYPE: smooth_l1
     BBOX_REG_LOSS_WEIGHT: 1.0
-    BBOX_REG_WEIGHTS:
-    - 1.0
-    - 1.0
-    - 1.0
-    - 1.0
+    BBOX_REG_WEIGHTS: *id003
     BOUNDARY_THRESH: -1
     CONV_DIMS:
     - -1
@@ -424,7 +386,6 @@ MODEL:
     - res5
     DEFORMABLE_TRANSFORMER_ENCODER_N_HEADS: 8
     DEFORMABLE_TRANSFORMER_ENCODER_N_POINTS: 4
-    IGNORE_CLASSES: []
     IGNORE_VALUE: 255
     IN_FEATURES:
     - res2
@@ -503,7 +464,7 @@ MODEL:
       - 9
       - 10
     WINDOW_SIZE: 14
-  WEIGHTS: ./RbA/ckpts/swin_b_1dl/swin_b_1dl/model_final.pth
+  WEIGHTS: pretrained/swin_base_patch4_window12_384_22k.pkl
   WIDE_RESNET:
     DILATION: true
     DIST_BN: false
@@ -531,7 +492,7 @@ SOLVER:
     NORM_TYPE: 2.0
   FORCE_REGION_PARTITION: false
   GAMMA: 0.1
-  IMS_PER_BATCH: 1
+  IMS_PER_BATCH: 16
   LR_SCHEDULER_NAME: WarmupPolyLR
   MAX_ITER: 90000
   MOMENTUM: 0.9

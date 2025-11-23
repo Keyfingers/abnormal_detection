@@ -322,9 +322,9 @@ def main():
         scheduler.step()
         
         print(f"Epoch {epoch}/{args.num_epochs}")
-        print(f"  Train Loss: {train_loss:.4f}")
-        print(f"  Val Loss: {val_loss:.4f}")
-        print(f"  LR: {scheduler.get_last_lr()[0]:.6f}")
+        print(f"  Train Loss: {train_loss:.6e}")
+        print(f"  Val Loss: {val_loss:.6e}")
+        print(f"  LR: {scheduler.get_last_lr()[0]:.6e}")
         
         # 保存检查点
         if val_loss < best_loss:

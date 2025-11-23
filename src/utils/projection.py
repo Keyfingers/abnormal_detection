@@ -525,7 +525,7 @@ def project_3d_to_2d_gaussian(
                 # 累加权重
                 weight_view = weight_map[batch_idx].view(1, -1) # (1, H*W)
                 # 构造权重向量
-                weights_vec = torch.full((valid_idx.sum(),), w, device=device, dtype=dtype)
+                weights_vec = torch.full((valid_idx.sum(),), w, device=device, dtype=features_3d.F.dtype)
                 weight_view.index_add_(1, flat_idx, weights_vec.unsqueeze(0))
 
     # 归一化

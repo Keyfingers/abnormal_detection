@@ -39,7 +39,7 @@ class GatedAdapterFusionHead(nn.Module):
         # 用于参数高效微调 (PEFT)
         self.adapter = nn.Sequential(
             nn.Conv2d(hidden_dim, hidden_dim // 4, kernel_size=1), # 降维
-            nn.ReLU(inplace=True),
+                nn.ReLU(inplace=True),
             nn.Conv2d(hidden_dim // 4, hidden_dim, kernel_size=1), # 升维
             nn.Sigmoid() # 输出作为缩放因子
         )
@@ -52,7 +52,7 @@ class GatedAdapterFusionHead(nn.Module):
             nn.Conv2d(hidden_dim, 1, kernel_size=1),
             nn.Sigmoid() # 输出异常概率
         )
-
+    
     def forward(
         self,
         features_2d: torch.Tensor,
@@ -66,7 +66,7 @@ class GatedAdapterFusionHead(nn.Module):
                 mode='bilinear',
                 align_corners=False,
             )
-            
+        
         # 对齐特征
         f2d = F.relu(self.bn_2d(self.align_2d(features_2d)))
         f3d = F.relu(self.bn_3d(self.align_3d(features_3d)))
