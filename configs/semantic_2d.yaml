@@ -1,7 +1,0 @@
-# 2D语义分支配置文件示例
-# 实际使用时，请使用RbA项目中的配置文件
-# 例如：RbA/configs/cityscapes/semantic-segmentation/swin/single_decoder_layer/maskformer2_swin_base_IN21k_384_bs16_90k_1dl.yaml
-
-# 注意：这个文件仅作为占位符
-# 请参考RbA项目的配置文件进行实际配置
-

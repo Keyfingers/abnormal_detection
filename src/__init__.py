@@ -1,2 +1,0 @@
-# Abnormal Detection Project
-
