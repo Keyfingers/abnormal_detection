@@ -103,10 +103,11 @@ def test_3d_to_2d_projection():
         projection_tensor = projection_matrix_to_torch(projection_matrix, device="cpu")
         
         # 投影
-        pixel_coords, depths = model.project_3d_to_2d(voxel_coords, projection_tensor)
+        pixel_coords, depths, cam_coords = model.project_3d_to_2d(voxel_coords, projection_tensor)
         
         assert pixel_coords.shape == (3, 2), f"像素坐标形状错误: {pixel_coords.shape}"
         assert depths.shape == (3,), f"深度形状错误: {depths.shape}"
+        assert cam_coords.shape == (3, 3), f"相机坐标形状错误: {cam_coords.shape}"
         assert torch.all(depths > 0), "深度应该大于0"
         
         print(f"✓ 3D到2D投影成功")
@@ -143,11 +144,11 @@ def test_2d_covariance_computation():
         projection_matrix = create_default_projection_matrix()
         projection_tensor = projection_matrix_to_torch(projection_matrix, device="cpu")
         
-        pixel_coords, depths = model.project_3d_to_2d(voxel_coords, projection_tensor)
+        pixel_coords, depths, cam_coords = model.project_3d_to_2d(voxel_coords, projection_tensor)
         
-        # 计算2D协方差
+        # 计算2D协方差（使用相机坐标）
         covariance_2d = model.compute_2d_covariance(
-            covariance_3d, pixel_coords, projection_tensor, depths
+            covariance_3d, cam_coords, projection_tensor, depths
         )
         
         assert covariance_2d.shape == (1, 2, 2), f"2D协方差形状错误: {covariance_2d.shape}"
