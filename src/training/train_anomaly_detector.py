@@ -66,14 +66,34 @@ def train_one_epoch(
     for batch_idx, batch in enumerate(pbar):
         # 1. 准备数据（只有正常数据）
         images = batch['img'].to(device)  # (B, C, H, W)
-        point_clouds = batch['points']  # 点云数据
-        projection_matrix = batch['projection_matrix'].to(device)  # (3, 4) 或 (4, 4)
+        point_clouds = batch['points']  # List[Tensor]，每个元素是一个点云
+        projection_matrices = batch['projection_matrix'].to(device)  # (B, 3, 4) 或 (B, 4, 4)
+        
+        B = images.shape[0]
         
         # 2. 提取特征（Backbone冻结）
+        # 注意：由于每个样本可能有不同的投影矩阵，需要逐个处理
+        batch_img_features = []
+        batch_pts_features = []
+        
         with torch.no_grad():
-            img_features, pts_features_proj = model.extract_features(
-                images, point_clouds, projection_matrix
-            )
+            for i in range(B):
+                # 单个样本
+                img_i = images[i:i+1]  # (1, C, H, W)
+                points_i = [point_clouds[i]]  # List with one point cloud
+                proj_i = projection_matrices[i]  # (3, 4) 或 (4, 4)
+                
+                # 提取特征
+                img_feat, pts_feat = model.extract_features(
+                    img_i, points_i, proj_i
+                )
+                
+                batch_img_features.append(img_feat)
+                batch_pts_features.append(pts_feat)
+            
+            # 拼接批次
+            img_features = torch.cat(batch_img_features, dim=0)  # (B, C_img, H', W')
+            pts_features_proj = torch.cat(batch_pts_features, dim=0)  # (B, C_pts, H', W')
         
         # 3. 关键步骤：在线生成伪异常（Pseudo-Anomaly Synthesis）
         # 注意：掩码尺寸是相对于特征图尺寸的（不是原图像素）
@@ -160,13 +180,25 @@ def validate(
         for batch in pbar:
             # 准备数据
             images = batch['img'].to(device)
-            point_clouds = batch['points']
-            projection_matrix = batch['projection_matrix'].to(device)
-            anomaly_mask = batch['anomaly_mask'].to(device)  # 真实异常标签
+            point_clouds = batch['points']  # List[Tensor]
+            projection_matrices = batch['projection_matrix'].to(device)  # (B, 3, 4)
+            anomaly_mask = batch['anomaly_mask'].to(device)  # 真实异常标签 (B, 1, H, W)
+            
+            B = images.shape[0]
             
             # 前向传播（不生成伪异常）
-            output = model(images, point_clouds, projection_matrix)
-            anomaly_map = output['anomaly_map']
+            # 由于每个样本可能有不同的投影矩阵，需要逐个处理
+            batch_anomaly_maps = []
+            
+            for i in range(B):
+                img_i = images[i:i+1]  # (1, C, H, W)
+                points_i = [point_clouds[i]]  # List with one point cloud
+                proj_i = projection_matrices[i]  # (3, 4)
+                
+                output = model(img_i, points_i, proj_i)
+                batch_anomaly_maps.append(output['anomaly_map'])
+            
+            anomaly_map = torch.cat(batch_anomaly_maps, dim=0)  # (B, 1, H', W')
             
             # 计算损失
             loss_dict = loss_func(anomaly_map, anomaly_mask)
@@ -299,9 +331,149 @@ def train(
 
 # 示例使用
 if __name__ == "__main__":
-    # 这里需要实现DataLoader
-    # 示例代码结构，实际使用时需要根据AnoVox数据集格式实现
+    import argparse
+    from torchvision import transforms
+    from torch.utils.data import DataLoader
+    from src.datasets.anovox_dataset import AnoVoxDataset
     
-    print("训练脚本框架已创建")
-    print("需要实现AnoVox数据集的DataLoader才能开始训练")
+    parser = argparse.ArgumentParser(description="训练异常检测模型")
+    parser.add_argument(
+        "--data_root",
+        type=str,
+        required=True,
+        help="AnoVox数据集根目录路径"
+    )
+    parser.add_argument(
+        "--mask2former_config",
+        type=str,
+        default="configs/mask2former_swin_l_cityscapes.yaml",
+        help="Mask2Former配置文件路径"
+    )
+    parser.add_argument(
+        "--mask2former_checkpoint",
+        type=str,
+        default="checkpoints/mask2former/model_final_064788.pkl",
+        help="Mask2Former权重路径"
+    )
+    parser.add_argument(
+        "--minkunet_checkpoint",
+        type=str,
+        default="checkpoints/mmdet3d/mmdet3d_placeholder.pth",
+        help="MinkUNet权重路径"
+    )
+    parser.add_argument(
+        "--batch_size",
+        type=int,
+        default=2,
+        help="批次大小（根据显存调整，推荐2-4）"
+    )
+    parser.add_argument(
+        "--num_epochs",
+        type=int,
+        default=50,
+        help="训练轮数"
+    )
+    parser.add_argument(
+        "--learning_rate",
+        type=float,
+        default=1e-3,
+        help="学习率"
+    )
+    parser.add_argument(
+        "--num_workers",
+        type=int,
+        default=4,
+        help="数据加载器工作进程数"
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda",
+        help="计算设备（cuda或cpu）"
+    )
+    parser.add_argument(
+        "--save_dir",
+        type=str,
+        default="checkpoints/anomaly_detector",
+        help="模型保存目录"
+    )
+    parser.add_argument(
+        "--anomaly_prob",
+        type=float,
+        default=0.5,
+        help="生成伪异常的概率"
+    )
+    parser.add_argument(
+        "--noise_type",
+        type=str,
+        default="gaussian",
+        choices=["gaussian", "shuffle"],
+        help="噪声类型"
+    )
+    parser.add_argument(
+        "--noise_scale",
+        type=float,
+        default=2.0,
+        help="噪声强度"
+    )
+    
+    args = parser.parse_args()
+    
+    # 1. 图像预处理 (适配Mask2Former，通常Resize到短边800)
+    transform = transforms.Compose([
+        transforms.Resize((800, 1333)),  # Mask2Former常用尺寸
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+    
+    # 2. 创建数据集
+    print(f"加载数据集: {args.data_root}")
+    train_dataset = AnoVoxDataset(
+        root_dir=args.data_root,
+        transform=transform
+    )
+    
+    # 3. 创建DataLoader
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=args.num_workers,
+        collate_fn=AnoVoxDataset.collate_fn,  # 关键！处理点云List
+        pin_memory=True if args.device == "cuda" else False
+    )
+    
+    print(f"数据集大小: {len(train_dataset)}")
+    print(f"批次数量: {len(train_loader)}")
+    
+    # 4. 初始化模型
+    print("初始化模型...")
+    model = AnomalyDetector(
+        mask2former_config_path=args.mask2former_config,
+        mask2former_checkpoint_path=args.mask2former_checkpoint,
+        minkunet_checkpoint_path=args.minkunet_checkpoint,
+        device=args.device
+    )
+    
+    # 打印参数量信息
+    param_info = model.count_parameters()
+    print(f"总参数量: {param_info['total']:,}")
+    print(f"可训练参数量: {param_info['trainable']:,}")
+    print(f"可训练参数比例: {param_info['trainable_ratio']*100:.2f}%")
+    
+    # 5. 开始训练
+    # 注意：val_loader设为None，因为我们只在训练集上跑伪异常
+    # 真正的验证需要另外加载Anomaly目录
+    train(
+        model=model,
+        train_loader=train_loader,
+        val_loader=None,
+        num_epochs=args.num_epochs,
+        learning_rate=args.learning_rate,
+        device=args.device,
+        save_dir=args.save_dir,
+        anomaly_prob=args.anomaly_prob,
+        noise_type=args.noise_type,
+        noise_scale=args.noise_scale
+    )
 

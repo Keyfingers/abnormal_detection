@@ -324,7 +324,86 @@ anomaly_map = output['anomaly_map']  # (1, 1, H, W)
 print(f"异常概率图形状: {anomaly_map.shape}")
 ```
 
-### 7. 运行测试
+### 7. 使用AnoVox数据集DataLoader
+
+```python
+from torchvision import transforms
+from torch.utils.data import DataLoader
+from src.datasets.anovox_dataset import AnoVoxDataset
+
+# 图像预处理（适配Mask2Former）
+transform = transforms.Compose([
+    transforms.Resize((800, 1333)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+# 创建数据集
+dataset = AnoVoxDataset(
+    root_dir="/path/to/AnoVox_Normality_Mono_Town03",
+    transform=transform
+)
+
+# 创建DataLoader
+dataloader = DataLoader(
+    dataset,
+    batch_size=2,
+    shuffle=True,
+    num_workers=4,
+    collate_fn=AnoVoxDataset.collate_fn  # 关键！处理点云列表
+)
+
+# 使用DataLoader
+for batch in dataloader:
+    images = batch['img']  # (B, C, H, W)
+    points = batch['points']  # List[Tensor]，每个元素是一个点云
+    projection_matrices = batch['projection_matrix']  # (B, 3, 4)
+    # ... 训练代码
+```
+
+### 8. 开始训练
+
+```bash
+# 使用命令行参数
+python src/training/train_anomaly_detector.py \
+    --data_root /path/to/AnoVox_Normality_Mono_Town03 \
+    --batch_size 2 \
+    --num_epochs 50 \
+    --learning_rate 1e-3 \
+    --device cuda
+
+# 或使用Python脚本
+python -c "
+from src.training.train_anomaly_detector import train
+from src.models.anomaly_detector import AnomalyDetector
+from torchvision import transforms
+from torch.utils.data import DataLoader
+from src.datasets.anovox_dataset import AnoVoxDataset
+
+# 创建数据集和DataLoader
+transform = transforms.Compose([
+    transforms.Resize((800, 1333)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+])
+
+dataset = AnoVoxDataset(root_dir='/path/to/AnoVox_Normality_Mono_Town03', transform=transform)
+train_loader = DataLoader(dataset, batch_size=2, shuffle=True, collate_fn=AnoVoxDataset.collate_fn)
+
+# 初始化模型
+model = AnomalyDetector(
+    mask2former_config_path='configs/mask2former_swin_l_cityscapes.yaml',
+    mask2former_checkpoint_path='checkpoints/mask2former/model_final_064788.pkl',
+    minkunet_checkpoint_path='checkpoints/mmdet3d/mmdet3d_placeholder.pth',
+    device='cuda'
+)
+
+# 开始训练
+train(model, train_loader, val_loader=None, num_epochs=50)
+"
+```
+
+### 9. 运行测试
 
 ```bash
 # 测试阶段一
@@ -338,6 +417,10 @@ python tests/test_feature_splatting.py
 
 # 测试阶段四
 python tests/test_fusion_head.py
+
+# 测试AnoVox数据集加载器
+export ANOVOX_DATA_ROOT=/path/to/AnoVox_Normality_Mono_Town03
+python tests/test_anovox_dataset.py
 
 # 集成测试（阶段一+二+三）
 python tests/test_integration_stage3.py
@@ -356,11 +439,21 @@ abnormal_detection/
 ├── src/                      # 源代码
 │   ├── models/               # 模型定义
 │   │   ├── semantic_2d.py    # Semantic2DBranch
-│   │   └── geometric_3d.py   # Geometric3DBranch
+│   │   ├── geometric_3d.py   # Geometric3DBranch
+│   │   ├── feature_splatting.py  # Feature Splatting
+│   │   ├── fusion_head.py    # Fusion Head
+│   │   └── anomaly_detector.py  # 端到端模型
+│   ├── datasets/             # 数据集加载器
+│   │   └── anovox_dataset.py # AnoVox数据集
+│   ├── losses/               # 损失函数
+│   │   └── anomaly_loss.py  # Focal Loss + Dice Loss
 │   ├── utils/                # 工具函数
 │   │   ├── image_preprocessing.py
-│   │   └── pointcloud_preprocessing.py
+│   │   ├── pointcloud_preprocessing.py
+│   │   ├── camera_calibration.py
+│   │   └── pseudo_anomaly.py
 │   └── training/             # 训练脚本
+│       └── train_anomaly_detector.py
 ├── scripts/                  # 工具脚本
 │   ├── download_mask2former_weights.py
 │   └── download_mmdet3d_weights.py
@@ -444,7 +537,8 @@ abnormal_detection/
 - [x] 阶段二：冻结的MinkUNet实现
 - [x] 阶段三：Feature Splatting投影
 - [x] 阶段四：轻量级融合头
-- [ ] 阶段五：训练与评估（需要AnoVox数据集DataLoader）
+- [x] 阶段五：AnoVox数据集DataLoader ✅
+- [ ] 阶段五：训练与评估（数据集已就绪，可以开始训练）
 
 ## 阶段四：轻量级融合头技术细节
 
@@ -490,6 +584,46 @@ abnormal_detection/
 ### 使用示例
 
 参考"快速开始"部分的"使用Fusion Head（阶段四）"和"使用端到端模型"章节。
+
+## 阶段五：AnoVox数据集DataLoader技术细节
+
+### 数据集结构
+
+AnoVox数据集采用以下目录结构：
+
+```
+AnoVox_Normality_Mono_Town03/
+├── Scenario_000/
+│   ├── RGB-CAM(0, 0, 1.8)(0, 0, 0)/
+│   │   └── *.png  (RGB图像)
+│   ├── LIDAR(0, 0, 1.8)(0, 0, 0)/
+│   │   └── *.npy  (LiDAR点云)
+│   └── sensor_setup.json  (传感器配置)
+└── Scenario_001/
+    └── ...
+```
+
+### 核心功能
+
+1. **自动配对**：自动匹配RGB图像和LiDAR点云（基于文件名）
+2. **投影矩阵计算**：
+   - 从`sensor_setup.json`解析相机内参
+   - 从文件夹名解析传感器外参（位置和旋转）
+   - 自动构建3D到2D投影矩阵
+3. **点云处理**：支持`.npy`格式点云，自动处理不同维度（x,y,z或x,y,z,intensity）
+4. **批次处理**：自定义`collate_fn`处理点云列表（MinkowskiEngine要求）
+
+### 传感器参数解析
+
+文件夹名格式：`RGB-CAM(x, y, z)(roll, pitch, yaw)`
+- 第一个括号：传感器位置（米）
+- 第二个括号：传感器旋转（度）
+
+如果RGB和LiDAR位置相同，外参矩阵简化为单位矩阵（坐标轴对齐）。
+
+### 使用示例
+
+参考"快速开始"部分的"使用AnoVox数据集DataLoader"章节。
 
 ## 阶段三：Feature Splatting技术细节
 
