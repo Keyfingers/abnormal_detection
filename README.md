@@ -6,7 +6,7 @@
 
 本项目采用五阶段架构：
 1. **阶段一**：冻结的Mask2Former（2D图像分支）✅
-2. **阶段二**：冻结的MinkUNet（3D点云分支）
+2. **阶段二**：冻结的MinkUNet（3D点云分支）✅
 3. **阶段三**：Feature Splatting投影（核心创新）
 4. **阶段四**：轻量级融合头
 5. **阶段五**：训练与评估
@@ -86,10 +86,35 @@ pip install -e .
 
 **重要**: Mask2Former需要单独安装，它不在detectron2的核心包中。
 
+7. **安装MMDetection3D**
+```bash
+# Step 1: 安装mmcv-full（MMDetection3D的依赖）
+# CUDA 11.3
+pip install mmcv-full -f https://download.openmmlab.com/mmcv/dist/cu113/torch1.10.0/index.html
+
+# CUDA 11.1
+pip install mmcv-full -f https://download.openmmlab.com/mmcv/dist/cu111/torch1.10.0/index.html
+
+# CPU only
+pip install mmcv-full -f https://download.openmmlab.com/mmcv/dist/cpu/torch1.10.0/index.html
+
+# Step 2: 安装MMDetection3D
+pip install mmdet3d
+
+# 或从源码安装
+git clone https://github.com/open-mmlab/mmdetection3d.git
+cd mmdetection3d && pip install -v -e .
+```
+
+更多安装选项请参考：[MMDetection3D安装指南](https://mmdetection3d.readthedocs.io/en/latest/get_started.html)
+
+**注意**: MMDetection3D需要先安装mmcv-full，请根据您的CUDA版本选择正确的wheel。
+
 ## 快速开始
 
 ### 1. 下载预训练权重
 
+**阶段一：Mask2Former权重**
 ```bash
 python scripts/download_mask2former_weights.py
 ```
@@ -101,6 +126,31 @@ python scripts/download_mask2former_weights.py
 2. 查看 Model Zoo 或 Releases 页面
 3. 下载 `mask2former_swin_large_IN21k_384_bs16_50ep_800k_cityscapes` 预训练权重
 4. 保存到 `checkpoints/mask2former/model_final_064788.pkl`
+
+**阶段二：MMDetection3D权重**
+```bash
+# 下载MinkUNet SemanticKITTI预训练权重（默认）
+python scripts/download_mmdet3d_weights.py
+
+# 或指定模型名称
+python scripts/download_mmdet3d_weights.py --model minkunet
+
+# 或使用自定义URL下载
+python scripts/download_mmdet3d_weights.py --url <weight_url>
+
+# 创建占位权重文件（仅用于测试，不推荐）
+python scripts/download_mmdet3d_weights.py --create-placeholder
+```
+
+权重文件将保存到 `checkpoints/mmdet3d/`
+
+**默认权重**：MinkUNet SemanticKITTI预训练权重
+- URL: https://download.openmmlab.com/mmdetection3d/v1.1.0_models/minkunet/minkunet_w32_8xb2-15e_semantickitti/minkunet_w32_8xb2-15e_semantickitti_20230309_160710-7fa0a6f1.pth
+- 模型：MinkUNet w32
+- 数据集：SemanticKITTI
+- 训练配置：8xb2-15e (8 GPUs, batch size 2, 15 epochs)
+
+**注意**：MMDetection3D提供了SemanticKITTI预训练权重，可以从[MMDetection3D Model Zoo](https://github.com/open-mmlab/mmdetection3d)获取更多模型权重。
 
 ### 2. 使用Semantic2DBranch
 
@@ -129,10 +179,42 @@ with torch.no_grad():
 print(f"特征形状: {features.shape}")
 ```
 
-### 3. 运行测试
+### 3. 使用Geometric3DBranch
+
+```python
+import numpy as np
+import torch
+from src.models.geometric_3d import Geometric3DBranch
+
+# 初始化模型
+model = Geometric3DBranch(
+    checkpoint_path="checkpoints/mmdet3d/mmdet3d_placeholder.pth",
+    config_path=None,  # 可选：MMDetection3D配置文件路径
+    freeze_backbone=True,
+    feature_dim=128,
+    voxel_size=0.05,  # 5cm体素
+    device="cuda"  # 或 "cpu"
+)
+
+# 创建测试点云（N, 3）或（N, 4）
+points = np.random.rand(1000, 3).astype(np.float32) * 10.0
+
+# 提取特征
+with torch.no_grad():
+    output = model(points)
+
+print(f"体素特征形状: {output['voxel_features'].shape}")
+print(f"体素坐标形状: {output['voxel_coords'].shape}")
+```
+
+### 4. 运行测试
 
 ```bash
+# 测试阶段一
 python tests/test_semantic_2d.py
+
+# 测试阶段二
+python tests/test_geometric_3d.py
 ```
 
 ## 项目结构
@@ -140,19 +222,25 @@ python tests/test_semantic_2d.py
 ```
 abnormal_detection/
 ├── checkpoints/              # 预训练模型权重
-│   └── mask2former/
+│   ├── mask2former/
+│   └── mmdet3d/
 ├── configs/                  # 配置文件
-│   └── mask2former_swin_l_cityscapes.yaml
+│   ├── mask2former_swin_l_cityscapes.yaml
+│   └── mmdet3d_semantickitti.py
 ├── src/                      # 源代码
 │   ├── models/               # 模型定义
-│   │   └── semantic_2d.py    # Semantic2DBranch
+│   │   ├── semantic_2d.py    # Semantic2DBranch
+│   │   └── geometric_3d.py   # Geometric3DBranch
 │   ├── utils/                # 工具函数
-│   │   └── image_preprocessing.py
+│   │   ├── image_preprocessing.py
+│   │   └── pointcloud_preprocessing.py
 │   └── training/             # 训练脚本
 ├── scripts/                  # 工具脚本
-│   └── download_mask2former_weights.py
+│   ├── download_mask2former_weights.py
+│   └── download_mmdet3d_weights.py
 ├── tests/                    # 测试代码
-│   └── test_semantic_2d.py
+│   ├── test_semantic_2d.py
+│   └── test_geometric_3d.py
 ├── requirements.txt          # 依赖包清单
 └── README.md                # 项目说明
 ```
@@ -202,12 +290,32 @@ abnormal_detection/
 
 **A**: 
 - 模型会自动添加维度适配器
-- 确保 `feature_dim` 参数设置为256
+- 确保 `feature_dim` 参数设置为256（2D）或128（3D）
+
+### Q5: MMDetection3D安装失败
+
+**A**: 
+1. 确保先安装mmcv-full（MMDetection3D的依赖）
+2. 根据CUDA版本选择正确的mmcv-full wheel
+3. 如果安装失败，尝试从源码安装
+4. 参考[MMDetection3D安装指南](https://mmdetection3d.readthedocs.io/en/latest/get_started.html)
+
+### Q6: MMDetection3D预训练权重下载失败
+
+**A**: 
+1. 默认使用MinkUNet SemanticKITTI预训练权重，URL已内置在脚本中
+2. 如果自动下载失败，可以手动下载：
+   ```bash
+   wget https://download.openmmlab.com/mmdetection3d/v1.1.0_models/minkunet/minkunet_w32_8xb2-15e_semantickitti/minkunet_w32_8xb2-15e_semantickitti_20230309_160710-7fa0a6f1.pth -O checkpoints/mmdet3d/minkunet_w32_8xb2-15e_semantickitti_20230309_160710-7fa0a6f1.pth
+   ```
+3. 更多模型权重可以从[MMDetection3D Model Zoo](https://github.com/open-mmlab/mmdetection3d)获取
+4. 查看configs/目录下的模型配置文件，其中的checkpoint字段包含权重URL
+5. 可以使用占位权重文件进行测试：`python scripts/download_mmdet3d_weights.py --create-placeholder`（不推荐，仅用于代码测试）
 
 ## 开发计划
 
 - [x] 阶段一：冻结的Mask2Former实现
-- [ ] 阶段二：冻结的MinkUNet实现
+- [x] 阶段二：冻结的MinkUNet实现
 - [ ] 阶段三：Feature Splatting投影
 - [ ] 阶段四：轻量级融合头
 - [ ] 阶段五：训练与评估
@@ -220,5 +328,6 @@ abnormal_detection/
 
 - [Mask2Former](https://github.com/facebookresearch/Mask2Former) - Facebook Research
 - [Detectron2](https://github.com/facebookresearch/detectron2) - Facebook Research
+- [MMDetection3D](https://github.com/open-mmlab/mmdetection3d) - OpenMMLab
 - [AnoVox Dataset](https://github.com/AnoVox) - 异常检测基准数据集
 

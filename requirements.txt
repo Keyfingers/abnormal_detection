@@ -25,6 +25,19 @@ iopath>=0.1.7
 # git clone https://github.com/facebookresearch/Mask2Former.git
 # cd Mask2Former && pip install -e .
 
+# MMDetection3D installation:
+# MMDetection3D needs to be installed separately.
+# Step 1: Install mmcv-full (required by MMDetection3D)
+# For CUDA 11.1: pip install mmcv-full -f https://download.openmmlab.com/mmcv/dist/cu111/torch1.10.0/index.html
+# For CUDA 11.3: pip install mmcv-full -f https://download.openmmlab.com/mmcv/dist/cu113/torch1.10.0/index.html
+# For CPU only: pip install mmcv-full -f https://download.openmmlab.com/mmcv/dist/cpu/torch1.10.0/index.html
+# Step 2: Install MMDetection3D
+# pip install mmdet3d
+# Or clone and install:
+# git clone https://github.com/open-mmlab/mmdetection3d.git
+# cd mmdetection3d && pip install -v -e .
+# Please refer to: https://mmdetection3d.readthedocs.io/en/latest/get_started.html
+
 # Testing dependencies
 pytest>=6.2.0
 
