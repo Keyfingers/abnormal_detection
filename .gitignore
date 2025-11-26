@@ -1,0 +1,6 @@
+/checkpoints/*
+*.pth
+*.pkl
+*.log
+*.tar
+*.tar.gz
