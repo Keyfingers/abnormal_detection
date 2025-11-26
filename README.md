@@ -7,7 +7,7 @@
 本项目采用五阶段架构：
 1. **阶段一**：冻结的Mask2Former（2D图像分支）✅
 2. **阶段二**：冻结的MinkUNet（3D点云分支）✅
-3. **阶段三**：Feature Splatting投影（核心创新）
+3. **阶段三**：Feature Splatting投影（核心创新）✅
 4. **阶段四**：轻量级融合头
 5. **阶段五**：训练与评估
 
@@ -207,7 +207,61 @@ print(f"体素特征形状: {output['voxel_features'].shape}")
 print(f"体素坐标形状: {output['voxel_coords'].shape}")
 ```
 
-### 4. 运行测试
+### 4. 使用Feature Splatting（阶段三）
+
+```python
+import torch
+import numpy as np
+from src.models.geometric_3d import Geometric3DBranch
+from src.models.feature_splatting import FeatureSplatting
+from src.utils.camera_calibration import create_default_projection_matrix, projection_matrix_to_torch
+
+# 初始化3D分支
+geometric_branch = Geometric3DBranch(
+    checkpoint_path="checkpoints/mmdet3d/mmdet3d_placeholder.pth",
+    freeze_backbone=True,
+    feature_dim=128,
+    voxel_size=0.05,
+    device="cuda"
+)
+
+# 初始化Feature Splatting
+feature_splatting = FeatureSplatting(
+    feature_dim=128,
+    image_height=800,
+    image_width=1333,
+    voxel_size=0.05,
+    device="cuda"
+)
+
+# 准备点云数据
+points = np.random.rand(1000, 3).astype(np.float32) * 10.0
+
+# 提取3D体素特征
+with torch.no_grad():
+    output_3d = geometric_branch(points)
+    voxel_features = output_3d['voxel_features']  # (M, 128)
+    voxel_coords = output_3d['voxel_coords']  # (M, 3)
+
+# 创建投影矩阵（需要根据实际相机标定调整）
+projection_matrix = create_default_projection_matrix(
+    image_width=1333,
+    image_height=800
+)
+projection_tensor = projection_matrix_to_torch(projection_matrix, device="cuda")
+
+# 执行Feature Splatting投影
+with torch.no_grad():
+    feature_map_2d = feature_splatting(
+        voxel_features,
+        voxel_coords,
+        projection_tensor
+    )  # (H, W, 128)
+
+print(f"2D特征图形状: {feature_map_2d.shape}")
+```
+
+### 5. 运行测试
 
 ```bash
 # 测试阶段一
@@ -215,6 +269,12 @@ python tests/test_semantic_2d.py
 
 # 测试阶段二
 python tests/test_geometric_3d.py
+
+# 测试阶段三
+python tests/test_feature_splatting.py
+
+# 集成测试（阶段一+二+三）
+python tests/test_integration_stage3.py
 ```
 
 ## 项目结构
@@ -316,9 +376,31 @@ abnormal_detection/
 
 - [x] 阶段一：冻结的Mask2Former实现
 - [x] 阶段二：冻结的MinkUNet实现
-- [ ] 阶段三：Feature Splatting投影
+- [x] 阶段三：Feature Splatting投影
 - [ ] 阶段四：轻量级融合头
 - [ ] 阶段五：训练与评估
+
+## 阶段三：Feature Splatting技术细节
+
+### 核心创新
+
+Feature Splatting是本项目的核心创新模块，实现了3D体素特征到2D特征图的可微投影：
+
+1. **高斯建模**：将每个体素建模为3D高斯分布（椭球）
+2. **投影变换**：通过相机投影矩阵将3D高斯投影到2D平面
+3. **特征聚合**：使用2D高斯权重进行特征聚合，生成稠密的2D特征图
+4. **可微性**：整个过程对位置和协方差可导，支持端到端训练
+
+### 技术特点
+
+- **稀疏到稠密**：解决点云稀疏性问题，生成连续的特征图
+- **可微投影**：支持反向传播，可以学习优化投影参数
+- **几何感知**：通过协方差矩阵建模空间不确定性
+- **高效实现**：使用GPU加速的光栅化过程
+
+### 使用示例
+
+参考"快速开始"部分的"使用Feature Splatting（阶段三）"章节。
 
 ## 许可证
 
