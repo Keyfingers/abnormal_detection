@@ -8,7 +8,7 @@
 1. **阶段一**：冻结的Mask2Former（2D图像分支）✅
 2. **阶段二**：冻结的MinkUNet（3D点云分支）✅
 3. **阶段三**：Feature Splatting投影（核心创新）✅
-4. **阶段四**：轻量级融合头
+4. **阶段四**：轻量级融合头 ✅
 5. **阶段五**：训练与评估
 
 ## 核心特性
@@ -261,7 +261,70 @@ with torch.no_grad():
 print(f"2D特征图形状: {feature_map_2d.shape}")
 ```
 
-### 5. 运行测试
+### 5. 使用Fusion Head（阶段四）
+
+```python
+import torch
+import numpy as np
+from src.models.fusion_head import FusionHead
+from src.losses.anomaly_loss import AnomalyDetectionLoss
+from src.utils.pseudo_anomaly import generate_pseudo_anomalies
+
+# 初始化融合头
+fusion_head = FusionHead(
+    img_feature_dim=256,
+    pts_feature_dim=128,
+    hidden_dim=64,
+    use_gating=True,
+    device="cuda"
+)
+
+# 准备特征（来自阶段一、二、三）
+img_features = torch.randn(1, 256, 800, 1333).cuda()  # 2D特征
+pts_features = torch.randn(1, 128, 800, 1333).cuda()   # 3D投影特征
+
+# 训练时：生成伪异常
+img_corrupted, pts_corrupted, anomaly_mask = generate_pseudo_anomalies(
+    img_features, pts_features, anomaly_prob=0.5
+)
+
+# 融合和判定
+anomaly_map = fusion_head(img_corrupted, pts_corrupted)  # (1, 1, 800, 1333)
+
+# 计算损失
+loss_func = AnomalyDetectionLoss()
+loss_dict = loss_func(anomaly_map, anomaly_mask)
+print(f"总损失: {loss_dict['loss']:.4f}")
+```
+
+### 6. 使用端到端模型
+
+```python
+from src.models.anomaly_detector import AnomalyDetector
+from src.utils.camera_calibration import create_default_projection_matrix, projection_matrix_to_torch
+
+# 初始化端到端模型
+model = AnomalyDetector(
+    mask2former_config_path="configs/mask2former_swin_l_cityscapes.yaml",
+    mask2former_checkpoint_path="checkpoints/mask2former/model_final_064788.pkl",
+    minkunet_checkpoint_path="checkpoints/mmdet3d/mmdet3d_placeholder.pth",
+    device="cuda"
+)
+
+# 准备数据
+images = torch.randn(1, 3, 800, 1333).cuda()
+points = np.random.rand(1000, 3).astype(np.float32) * 10.0
+projection_matrix = projection_matrix_to_torch(
+    create_default_projection_matrix(1333, 800), "cuda"
+)
+
+# 前向传播
+output = model(images, points, projection_matrix)
+anomaly_map = output['anomaly_map']  # (1, 1, H, W)
+print(f"异常概率图形状: {anomaly_map.shape}")
+```
+
+### 7. 运行测试
 
 ```bash
 # 测试阶段一
@@ -272,6 +335,9 @@ python tests/test_geometric_3d.py
 
 # 测试阶段三
 python tests/test_feature_splatting.py
+
+# 测试阶段四
+python tests/test_fusion_head.py
 
 # 集成测试（阶段一+二+三）
 python tests/test_integration_stage3.py
@@ -377,8 +443,53 @@ abnormal_detection/
 - [x] 阶段一：冻结的Mask2Former实现
 - [x] 阶段二：冻结的MinkUNet实现
 - [x] 阶段三：Feature Splatting投影
-- [ ] 阶段四：轻量级融合头
-- [ ] 阶段五：训练与评估
+- [x] 阶段四：轻量级融合头
+- [ ] 阶段五：训练与评估（需要AnoVox数据集DataLoader）
+
+## 阶段四：轻量级融合头技术细节
+
+### 核心设计
+
+融合头采用"适配器+门控+判定"的三层架构：
+
+1. **适配器（Adapter）**：
+   - 维度对齐：将2D（256维）和3D（128维）特征投影到统一维度（64维）
+   - 特征交互：使用1x1卷积或交叉注意力机制
+   - 参数量：<5%总参数量（符合PEFT原则）
+
+2. **门控机制（Gating）**：
+   - 学习动态权重，决定在每个像素点更信任图像还是点云
+   - 例如：在黑暗隧道中，自动提高点云特征的权重
+
+3. **异常判定（Decision）**：
+   - 基于"语义-几何不一致性"输出异常概率图
+   - 输出：Sigmoid激活的异常概率图 (H, W, 1)
+
+### 训练策略：自监督合成异常
+
+**问题**：训练数据只有Normal数据，直接使用Focal Loss会导致模型崩溃（永远输出0）
+
+**解决方案**：在线生成伪异常（Self-Supervised Synthetic Anomaly）
+
+- **训练阶段**：仅使用Normal数据，在线生成伪异常
+  - 随机在特征图上注入噪声（高斯噪声或特征打乱）
+  - 生成异常掩码（标签：0=正常，1=异常）
+  - Focal Loss现在可以正常工作
+
+- **验证阶段**：使用真实的AnoVox异常数据
+  - 计算FPR95、AUPR等指标
+  - 验证模型对真实异常的检测能力
+
+### 损失函数
+
+组合损失：`Loss = Focal Loss + Dice Loss`
+
+- **Focal Loss**：解决正负样本不平衡（异常区域通常很小）
+- **Dice Loss**：优化分割边界（异常检测本质上是分割任务）
+
+### 使用示例
+
+参考"快速开始"部分的"使用Fusion Head（阶段四）"和"使用端到端模型"章节。
 
 ## 阶段三：Feature Splatting技术细节
 
